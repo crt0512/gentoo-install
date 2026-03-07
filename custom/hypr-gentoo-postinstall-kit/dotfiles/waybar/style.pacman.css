@@ -1,0 +1,110 @@
+* {
+  border: none;
+  font-family: "JetBrainsMono Nerd Font", "FiraCode Nerd Font", "Symbols Nerd Font", "Noto Sans";
+  font-size: 15px;
+  min-height: 0;
+  font-weight: 700;
+}
+
+window#waybar {
+  background: #1a1b26;
+  color: #c0caf5;
+  border: 1px solid #7aa2f7;
+  border-radius: 10px;
+}
+
+#workspaces,
+#custom-launch-firefox,
+#custom-launch-steam,
+#custom-launch-scanner,
+#custom-launch-obs,
+#custom-launch-zoom,
+#custom-launch-thunar,
+#custom-launch-kitty,
+#custom-launch-dolphin,
+#custom-launch-code,
+#custom-monitor,
+#clock,
+#custom-tec,
+#custom-usb,
+#custom-network,
+#custom-bluetooth,
+#custom-audio,
+#custom-mic,
+#custom-cpu,
+#custom-ram,
+#custom-gpu,
+#custom-separator {
+  margin-top: 4px;
+  margin-bottom: 3px;
+  margin-left: 1px;
+  margin-right: 1px;
+  padding: 2px 6px;
+  border-radius: 7px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+#custom-separator {
+  color: #89b4fa;
+  opacity: 0.8;
+}
+
+#workspaces {
+  padding: 2px 3px;
+}
+
+#workspaces button {
+  margin: 0 2px;
+  min-width: 24px;
+  border-radius: 9px;
+  padding: 2px 7px;
+  color: #b4befe;
+  background: transparent;
+}
+
+#workspaces button.active {
+  color: #f9e2af;
+  text-shadow: 0 0 10px #f9e2af;
+}
+
+#workspaces button:hover {
+  background: transparent;
+  color: #89b4fa;
+}
+
+#workspaces button label {
+  font-size: 16px;
+}
+
+#custom-launch-firefox { color: #7dcfff; }
+#custom-launch-steam { color: #9ece6a; }
+#custom-launch-scanner { color: #f7768e; }
+#custom-launch-obs { color: #bb9af7; }
+#custom-launch-zoom { color: #2ac3de; }
+#custom-launch-thunar { color: #73daca; }
+#custom-launch-kitty { color: #f9e2af; }
+#custom-launch-dolphin { color: #89b4fa; }
+#custom-launch-code { color: #cba6f7; }
+
+#custom-monitor { color: #ff9e64; }
+#clock { color: #9ece6a; }
+
+#custom-tec { color: #e0af68; }
+#custom-usb { color: #f7768e; }
+#custom-network { color: #7aa2f7; }
+#custom-bluetooth { color: #89dceb; }
+#custom-audio { color: #2ac3de; }
+#custom-mic { color: #bb9af7; }
+#custom-cpu { color: #9ece6a; }
+#custom-ram { color: #f5c2e7; }
+#custom-gpu { color: #73daca; }
+
+tooltip {
+  background: #11111b;
+  color: #cdd6f4;
+  border: 1px solid #89b4fa;
+}
+
+@import url("theme.css");

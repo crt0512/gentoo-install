@@ -1,0 +1,147 @@
+{
+  "layer": "top",
+  "position": "top",
+  "height": 34,
+  "margin-top": 7,
+  "margin-left": 10,
+  "margin-right": 10,
+  "spacing": 3,
+  "modules-left": [
+    "custom/launch-firefox",
+    "custom/launch-steam",
+    "custom/launch-scanner",
+    "custom/launch-obs",
+    "custom/launch-zoom",
+    "custom/separator",
+    "hyprland/workspaces"
+  ],
+  "hyprland/workspaces": {
+    "format": "{icon}",
+    "format-icons": {
+      "active": "",
+      "default": "",
+      "empty": ""
+    },
+    "persistent-workspaces": {
+      "*": [1, 2, 3, 4, 5]
+    }
+  },
+  "modules-center": [
+    "custom/monitor",
+    "custom/separator",
+    "clock"
+  ],
+  "modules-right": [
+    "custom/tec",
+    "custom/separator",
+    "custom/usb",
+    "custom/separator",
+    "custom/network",
+    "custom/separator",
+    "custom/audio",
+    "custom/separator",
+    "custom/mic",
+    "custom/separator",
+    "custom/cpu",
+    "custom/separator",
+    "custom/ram",
+    "custom/separator",
+    "custom/gpu"
+  ],
+  "custom/separator": {
+    "format": "|",
+    "tooltip": false
+  },
+  "custom/tec": {
+    "exec": "~/.config/waybar/scripts/tec-status.sh",
+    "interval": 3,
+    "return-type": "json",
+    "on-click": "~/.config/waybar/scripts/tec-restart-click.sh",
+    "on-click-right": "/usr/local/bin/tec-status"
+  },
+  "custom/usb": {
+    "exec": "~/.config/waybar/scripts/usb-status.sh",
+    "interval": 4,
+    "return-type": "json"
+  },
+  "custom/network": {
+    "exec": "~/.config/waybar/scripts/net-status.sh",
+    "interval": 3,
+    "return-type": "json",
+    "on-click": "~/.config/waybar/scripts/net-menu.sh"
+  },
+  "custom/audio": {
+    "exec": "~/.config/waybar/scripts/audio-status.sh",
+    "interval": 2,
+    "return-type": "json",
+    "on-click": "~/.config/waybar/scripts/audio-menu.sh",
+    "on-click-right": "~/.config/waybar/scripts/audio-select.sh sink",
+    "on-scroll-up": "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+",
+    "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+  },
+  "custom/mic": {
+    "exec": "~/.config/waybar/scripts/mic-status.sh",
+    "interval": 2,
+    "return-type": "json",
+    "on-click": "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
+    "on-click-right": "~/.config/waybar/scripts/audio-select.sh source",
+    "on-scroll-up": "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SOURCE@ 5%+",
+    "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 5%-"
+  },
+  "custom/cpu": {
+    "exec": "~/.config/waybar/scripts/cpu-status.sh",
+    "interval": 2,
+    "return-type": "json"
+  },
+  "custom/ram": {
+    "exec": "~/.config/waybar/scripts/ram-status.sh",
+    "interval": 2,
+    "return-type": "json"
+  },
+  "custom/gpu": {
+    "exec": "~/.config/waybar/scripts/gpu-status.sh",
+    "interval": 2,
+    "return-type": "json"
+  },
+  "custom/monitor": {
+    "exec": "~/.config/waybar/scripts/monitor-status.sh",
+    "interval": 2,
+    "return-type": "json",
+    "on-click": "~/.config/waybar/scripts/monitor-menu.sh"
+  },
+  "clock": {
+    "format": " {:%H:%M:%S}",
+    "tooltip-format": "{:%A, %d %B %Y}",
+    "on-click": "~/.config/waybar/scripts/calendar-popup.sh"
+  },
+  "custom/gentoo": {
+    "exec": "~/.config/waybar/scripts/gentoo-label.sh",
+    "interval": 3600,
+    "return-type": "json"
+  },
+  "custom/launch-firefox": {
+    "format": "󰈹",
+    "tooltip": "Firefox",
+    "on-click": "~/.config/waybar/scripts/launch-app.sh firefox"
+  },
+  "custom/launch-steam": {
+    "format": "",
+    "tooltip": "Steam",
+    "on-click": "~/.config/waybar/scripts/launch-app.sh steam"
+  },
+  "custom/launch-scanner": {
+    "format": "󰚫",
+    "tooltip": "HP Scanner",
+    "on-click": "~/.config/waybar/scripts/launch-app.sh scanner"
+  },
+  "custom/launch-obs": {
+    "format": "󰐾",
+    "tooltip": "OBS Studio",
+    "on-click": "~/.config/waybar/scripts/launch-app.sh obs"
+  },
+  "custom/launch-zoom": {
+    "format": "󰬇",
+    "tooltip": "Zoom",
+    "on-click": "~/.config/waybar/scripts/launch-app.sh zoom"
+  }
+}

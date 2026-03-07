@@ -404,6 +404,7 @@ function check_wanted_programs() {
 	if type pacman &>/dev/null; then
 		declare -A pacman_packages
 		pacman_packages=(
+			[ntpd]=ntp
 			[zfs]=""
 		)
 		elog "Detected pacman package manager."
@@ -443,7 +444,12 @@ function check_wanted_programs() {
 			emerge --sync || die "Failed to synchronize Portage repositories."
 
 			for program in "${missing_required[@]}" "${missing_wanted[@]}"; do
-				elog "You need to manually install $program."
+				if [[ "$program" == "ntpd" ]]; then
+					elog "Installing ntpd using emerge..."
+					emerge --ask ntp || die "Failed to install ntpd."
+				else
+					elog "You need to manually install $program."
+				fi
 			done
 		fi
 	elif type curl &>/dev/null; then

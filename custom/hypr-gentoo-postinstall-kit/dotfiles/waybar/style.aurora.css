@@ -1,0 +1,108 @@
+* {
+  border: none;
+  font-family: "JetBrainsMono Nerd Font", "Symbols Nerd Font", "Noto Sans";
+  font-size: 12px;
+  min-height: 0;
+}
+
+window#waybar {
+  background: transparent;
+  color: #cdd6f4;
+}
+
+#workspaces,
+#custom-launch-firefox,
+#custom-launch-steam,
+#custom-launch-scanner,
+#custom-launch-obs,
+#custom-launch-zoom,
+#custom-monitor,
+#clock,
+#custom-tec,
+#custom-usb,
+#custom-network,
+#custom-audio,
+#custom-mic,
+#custom-cpu,
+#custom-ram,
+#custom-gpu {
+  margin-top: 8px;
+  margin-bottom: 0;
+  margin-left: 3px;
+  margin-right: 3px;
+  padding: 7px 12px;
+  border-radius: 13px;
+  background: rgba(17, 17, 27, 0.90);
+  border: 1px solid rgba(137, 180, 250, 0.46);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.32);
+}
+
+#custom-monitor,
+#clock {
+  background: linear-gradient(90deg, rgba(137, 180, 250, 0.40), rgba(148, 226, 213, 0.34));
+  border-color: rgba(148, 226, 213, 0.86);
+  color: #f2f5ff;
+}
+
+#workspaces {
+  padding: 4px 6px;
+}
+
+#workspaces button {
+  margin: 0 3px;
+  min-width: 22px;
+  border-radius: 10px;
+  padding: 3px 8px;
+  color: #b4befe;
+  background: rgba(49, 50, 68, 0.92);
+}
+
+#workspaces button.active {
+  color: #11111b;
+  background: linear-gradient(90deg, #89b4fa, #94e2d5);
+}
+
+#workspaces button:hover {
+  background: rgba(137, 180, 250, 0.36);
+}
+
+#custom-launch-firefox,
+#custom-launch-steam,
+#custom-launch-scanner,
+#custom-launch-obs,
+#custom-launch-zoom {
+  font-size: 14px;
+  min-width: 20px;
+  color: #b4befe;
+  background: rgba(30, 30, 46, 0.94);
+}
+
+#custom-launch-firefox:hover,
+#custom-launch-steam:hover,
+#custom-launch-scanner:hover,
+#custom-launch-obs:hover,
+#custom-launch-zoom:hover {
+  color: #11111b;
+  background: linear-gradient(90deg, #cba6f7, #89b4fa);
+  border-color: rgba(203, 166, 247, 0.9);
+}
+
+#custom-tec.ok { color: #a6e3a1; }
+#custom-tec.warn { color: #f9e2af; }
+#custom-tec.err { color: #f38ba8; }
+
+#custom-network { color: #89dceb; }
+#custom-audio { color: #a6e3a1; }
+#custom-mic { color: #f5c2e7; }
+#custom-cpu { color: #89b4fa; }
+#custom-ram { color: #cba6f7; }
+#custom-gpu { color: #94e2d5; }
+#custom-usb { color: #fab387; }
+
+tooltip {
+  background: rgba(17, 17, 27, 0.96);
+  color: #cdd6f4;
+  border: 1px solid #89b4fa;
+}
+
+@import url("theme.css");

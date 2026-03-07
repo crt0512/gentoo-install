@@ -1,0 +1,11 @@
+show=drun
+width=700
+height=420
+always_parse_args=true
+show_all=false
+print_command=true
+insensitive=true
+allow_markup=true
+hide_scroll=true
+no_actions=true
+prompt=Search
