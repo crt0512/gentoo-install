@@ -117,7 +117,7 @@ CFG
 pkill -x waybar 2>/dev/null || true
 
 # If launcher loop is missing, start it once.
-if ! pgrep -f "/home/edo/.config/hypr/scripts/waybar-launch.sh" >/dev/null 2>&1; then
+if ! pgrep -f "$HOME/.config/hypr/scripts/waybar-launch.sh" >/dev/null 2>&1; then
   "$HOME/.config/hypr/scripts/waybar-launch.sh" >/dev/null 2>&1 &
 fi
 
