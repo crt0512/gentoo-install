@@ -28,6 +28,7 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/utils.sh"
 # Remember actual config file path
 CONFIG_FILE="$(realpath "${1-"gentoo.conf"}" 2>/dev/null)"
 RELA_CONFIG_FILE="$(realpath --relative-to="$(pwd)" "$CONFIG_FILE" 2>/dev/null)"
+CUSTOM_CONFIG_FILE="$GENTOO_INSTALL_REPO_DIR/custom/gentoo.custom.conf"
 
 # Check if help is requested
 while [[ $# -gt 0 ]]; do
@@ -900,6 +901,7 @@ MENU_ITEMS=(
 	"ENABLE_SSHD"
 	"ENABLE_BINPKG"
 	"KERNEL_TYPE"
+	"CUSTOM_INTEGRATIONS"
 	"ROOT_SSH_AUTHORIZED_KEYS"
 	"ADDITIONAL_PACKAGES"
 )
@@ -1574,6 +1576,52 @@ function KERNEL_TYPE_menu()  {
 	else
 		# Return to menu
 		true
+	fi
+}
+
+function CUSTOM_INTEGRATIONS_tag()   { echo "Custom integrations"; }
+function CUSTOM_INTEGRATIONS_label() {
+	local hypr="${HYPR_POSTINSTALL_ENABLE:-false}"
+	local tkg="${CUSTOM_KERNEL_PIPELINE_ENABLE:-false}"
+	echo "(hypr:$hypr, tkg:$tkg)"
+}
+function CUSTOM_INTEGRATIONS_show()  { return 0; }
+function CUSTOM_INTEGRATIONS_help()  {
+	echo "Opens custom/gentoo.custom.conf for advanced options and hooks (Hyprland and linux-tkg)."
+}
+function CUSTOM_INTEGRATIONS_menu()  {
+	mkdir -p "$(dirname "$CUSTOM_CONFIG_FILE")" \
+		|| die "Could not create custom config directory"
+
+	if [[ ! -f "$CUSTOM_CONFIG_FILE" ]]; then
+		cat > "$CUSTOM_CONFIG_FILE" <<'EOF'
+# Custom integration hooks and advanced options.
+# This file is sourced by gentoo.conf and survives ./configure rewrites.
+
+HYPR_POSTINSTALL_ENABLE=true
+HYPR_POSTINSTALL_RUN_BOOTSTRAP=true
+HYPR_POSTINSTALL_WITH_HYPROVERLAY=false
+HYPR_POSTINSTALL_GPU_PROFILE="auto"
+HYPR_POSTINSTALL_MACHINE_PROFILE="auto"
+HYPR_POSTINSTALL_TARGET_USER=""
+
+CUSTOM_KERNEL_PIPELINE_ENABLE=false
+CUSTOM_KERNEL_SCRIPT_RELATIVE_PATH=""
+CUSTOM_KERNEL_SCRIPT_ARGS=()
+EOF
+	fi
+
+	dialog \
+		--title "Custom integrations (Hyprland/linux-tkg)" \
+		--editbox "$CUSTOM_CONFIG_FILE" "${EDITTEXT_SIZE[@]}"
+
+	if [[ $? -eq 0 ]]; then
+		echo "$dialog_out" > "$CUSTOM_CONFIG_FILE" \
+			|| die "Could not write custom config"
+		# Reload variables in current configurator session so labels/help reflect latest values.
+		# shellcheck disable=SC1090
+		source "$CUSTOM_CONFIG_FILE" || die "Could not source custom config"
+		UNSAVED_CHANGES=true
 	fi
 }
 
