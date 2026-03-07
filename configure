@@ -105,89 +105,7 @@ function get_all_keymaps() {
 }
 
 function get_all_timezones() {
-	einfo "Detecting available timezones..."
-	
-	# Initialize with fallback list first
-	ALL_TIMEZONES=(
-		"UTC"
-		"Europe/London"
-		"Europe/Paris"
-		"Europe/Berlin"
-		"Europe/Rome"
-		"Europe/Madrid"
-		"Europe/Amsterdam"
-		"Europe/Brussels"
-		"Europe/Vienna"
-		"Europe/Zurich"
-		"Europe/Stockholm"
-		"Europe/Oslo"
-		"Europe/Copenhagen"
-		"Europe/Helsinki"
-		"Europe/Warsaw"
-		"Europe/Prague"
-		"Europe/Budapest"
-		"Europe/Bucharest"
-		"Europe/Sofia"
-		"Europe/Athens"
-		"Europe/Istanbul"
-		"Europe/Moscow"
-		"Asia/Tokyo"
-		"Asia/Shanghai"
-		"Asia/Seoul"
-		"Asia/Singapore"
-		"Asia/Hong_Kong"
-		"Asia/Bangkok"
-		"Asia/Jakarta"
-		"Asia/Manila"
-		"Asia/Kolkata"
-		"Asia/Dubai"
-		"Asia/Tehran"
-		"Asia/Jerusalem"
-		"Africa/Cairo"
-		"Africa/Lagos"
-		"Africa/Johannesburg"
-		"Africa/Nairobi"
-		"America/New_York"
-		"America/Chicago"
-		"America/Denver"
-		"America/Los_Angeles"
-		"America/Toronto"
-		"America/Vancouver"
-		"America/Mexico_City"
-		"America/Sao_Paulo"
-		"America/Buenos_Aires"
-		"Australia/Sydney"
-		"Australia/Melbourne"
-		"Australia/Perth"
-		"Pacific/Auckland"
-		"Pacific/Honolulu"
-	)
-	
-	einfo "Fallback timezone list loaded with ${#ALL_TIMEZONES[@]} timezones"
-	
-	# Try to detect system timezones if available
-	if [[ -d "/usr/share/zoneinfo" ]]; then
-		einfo "Detecting system timezones from /usr/share/zoneinfo..."
-		
-		# Try to find timezone files
-		local timezone_files
-		timezone_files=$(find /usr/share/zoneinfo -type f -printf "%P\n" 2>/dev/null | sort -u)
-		
-		if [[ -n "$timezone_files" ]]; then
-			# Convert to array and replace fallback list
-			readarray -t ALL_TIMEZONES < <(echo "$timezone_files")
-			einfo "Successfully detected ${#ALL_TIMEZONES[@]} system timezones"
-			
-			# Debug: Show first few timezones
-			if [[ ${#ALL_TIMEZONES[@]} -gt 0 ]]; then
-				einfo "Sample timezones: ${ALL_TIMEZONES[*]:0:5}"
-			fi
-		else
-			ewarn "No timezone files found in /usr/share/zoneinfo, using fallback list"
-		fi
-	else
-		ewarn "/usr/share/zoneinfo directory not found, using fallback list"
-	fi
+	readarray -t ALL_TIMEZONES < <(find /usr/share/zoneinfo -type f -printf "%P\n" | sort -u)
 }
 
 function recalculate_locales() {
@@ -301,6 +219,10 @@ PARTITIONING_ZFS_POOL_TYPES=("standard" "custom")
 PARTITIONING_ZFS_COMPRESSIONS=("on" "gzip" "lz4" "lzjb" "zle" "zstd" "zstd-fast")
 
 PORTAGE_SYNC_TYPES=("git" "rsync")
+KERNEL_TYPES=(
+	"bin"    "bin    | Pre-built binary kernel (gentoo-kernel-bin)"
+	"source" "source | Build kernel from source (gentoo-kernel)"
+)
 
 function create_single_disk_layout() {
 	create_classic_single_disk_layout "$@"
@@ -516,57 +438,10 @@ function load_default_config() {
 
 	ADDITIONAL_PACKAGES=()
 	ENABLE_SSHD=true
-	CREATE_USER=""
-	# CREATE_USER_PASSWORD removed for security - passwords are now set interactively
-	CREATE_USER_GROUPS="users,wheel,audio,video,usb"  # Default user groups, comma-separated
 	ENABLE_BINPKG=false
+	KERNEL_TYPE=bin
 	ROOT_SSH_AUTHORIZED_KEYS=""
 
-	# Desktop Environment Configuration
-	DESKTOP_ENVIRONMENT=""
-	DESKTOP_ADDITIONAL_PACKAGES=()
-	ENABLE_DISPLAY_MANAGER="auto"
-	ENABLE_NETWORK_MANAGER="auto"
-	
-	# Hyprland Configuration (EXPERIMENTAL)
-	# Load the example configuration from contrib/hyprland.conf.example
-	if [[ -f "$GENTOO_INSTALL_REPO_DIR/contrib/hyprland.conf.example" ]]; then
-		HYPRLAND_CONFIG="$(cat "$GENTOO_INSTALL_REPO_DIR/contrib/hyprland.conf.example")"
-	else
-		# Fallback to a minimal configuration if the file doesn't exist
-		HYPRLAND_CONFIG="# Minimal Hyprland Configuration
-monitor=,preferred,auto,1
-env = XCURSOR_SIZE,24
-general { gaps_in = 5 gaps_out = 10 border_size = 2 layout = dwindle }
-decoration { rounding = 10 }
-input { kb_layout = us follow_mouse = 1 }
-bind = SUPER, RETURN, exec, kitty
-bind = SUPER, Q, killactive,
-bind = SUPER, SPACE, exec, wofi --show drun"
-	fi
-	# Bootloader Configuration
-	BOOTLOADER_TYPE="grub"  # Options: grub, systemd-boot, efistub
-	ENABLE_DUAL_BOOT_DETECTION=false  # Enable os-prober for multi-OS detection
-	GRUB_CUSTOM_PARAMS=()  # Custom kernel parameters for GRUB
-
-	# Performance & Testing Configuration
-	ENABLE_PERFORMANCE_OPTIMIZATION=true
-	ENABLE_DISPLAY_BACKEND_TESTING=true
-	ENABLE_GPU_BENCHMARKING=false
-
-	# KDE System Configuration
-	ENABLE_KDE_POLKIT_ADMIN=true  # Grant wheel group administrative privileges
-	ENABLE_KDE_KWALLET_PAM=true   # Enable KWallet PAM integration for auto-unlocking
-
-	# Package Management Configuration
-	PACKAGE_USE_RULES=()
-	PACKAGE_KEYWORDS=()
-	OVERLAY_NAMES=()
-
-	# Cleanup Configuration
-	ENABLE_AUTO_CLEANUP=false  # Automatically cleanup on script exit
-	CLEANUP_ON_INTERRUPT=true  # Cleanup when interrupted (Ctrl+C)
-	
 	# All settings are unsaved.
 	UNSAVED_CHANGES=true
 }
@@ -619,8 +494,7 @@ function on_off_str() {
 
 function on_off_label() {
 	local prefix="${2:-}"
-	local var_value="$1"
-	on_off_str "$var_value" "${prefix}[*]" "${prefix}[ ]"
+	on_off_str "$1" "${prefix}[*]" "${prefix}[ ]"
 }
 
 function on_off_label_inverted() {
@@ -1024,32 +898,9 @@ MENU_ITEMS=(
 	"SELECT_MIRRORS_LARGE_FILE"
 	"--------"
 	"ENABLE_SSHD"
-	"CREATE_USER"
-	"ENABLE_RANDOM_PASSWORD"
-	"CREATE_USER_GROUPS"
 	"ENABLE_BINPKG"
+	"KERNEL_TYPE"
 	"ROOT_SSH_AUTHORIZED_KEYS"
-	"--------"
-	"DESKTOP_ENVIRONMENT"
-	"DESKTOP_ADDITIONAL_PACKAGES"
-	"HYPRLAND_CONFIG"
-	"ENABLE_DISPLAY_MANAGER"
-	"ENABLE_NETWORK_MANAGER"
-	"--------"
-	"ENABLE_PERFORMANCE_OPTIMIZATION"
-	"ENABLE_DISPLAY_BACKEND_TESTING"
-	"ENABLE_GPU_BENCHMARKING"
-	"--------"
-	"ENABLE_KDE_POLKIT_ADMIN"
-	"ENABLE_KDE_KWALLET_PAM"
-	"--------"
-	"PACKAGE_USE_RULES"
-	"PACKAGE_KEYWORDS"
-	"OVERLAY_MANAGER"
-	"--------"
-	"ENABLE_AUTO_CLEANUP"
-	"CLEANUP_ON_INTERRUPT"
-	"--------"
 	"ADDITIONAL_PACKAGES"
 )
 
@@ -1375,18 +1226,6 @@ function TIMEZONE_label() { echo "($TIMEZONE)"; }
 function TIMEZONE_show()  { return 0; }
 function TIMEZONE_help()  { echo "The timezone for the new system."; }
 function TIMEZONE_menu()  {
-	# Debug: Check if timezones are available
-	if [[ ${#ALL_TIMEZONES[@]} -eq 0 ]]; then
-		ewarn "No timezones found! Attempting to reload timezone list..."
-		get_all_timezones
-		
-		# Timezone list is already populated with fallback values
-		# No need for additional error checking
-	fi
-	
-	# Debug: Show timezone count
-	einfo "Found ${#ALL_TIMEZONES[@]} timezones"
-	
 	if menu_radiolist \
 		"Select timezone" \
 		"Select which timezone to use." \
@@ -1710,46 +1549,6 @@ function ENABLE_SSHD_menu()  {
 	UNSAVED_CHANGES=true
 }
 
-function CREATE_USER_tag()   { echo "Create user account"; }
-function CREATE_USER_label() { echo "(${CREATE_USER:-none})"; }
-function CREATE_USER_show()  { return 0; }
-function CREATE_USER_help()  { echo "Create a non-root user account during installation. This is recommended for security and daily use."; }
-function CREATE_USER_menu()  {
-	dialog \
-		--title "Create User Account" \
-		--inputbox "Enter username for the new user account (leave empty for none):" \
-		"${INPUTBOX_SIZE[@]}" "$CREATE_USER"
-	CREATE_USER="$dialog_out"
-	UNSAVED_CHANGES=true
-}
-
-	# CREATE_USER_PASSWORD functions removed for security - passwords are now set interactively
-	
-	# Secure password handling options
-	ENABLE_RANDOM_PASSWORD=false  # Generate random password instead of interactive prompt
-
-function ENABLE_RANDOM_PASSWORD_tag()   { echo " ├ Generate random password"; }
-function ENABLE_RANDOM_PASSWORD_label() { on_off_label "$ENABLE_RANDOM_PASSWORD"; }
-function ENABLE_RANDOM_PASSWORD_show()  { [[ -n "$CREATE_USER" ]]; }
-function ENABLE_RANDOM_PASSWORD_help()  { echo "Generate a secure random password instead of prompting for user input. The password will be displayed after user creation."; }
-function ENABLE_RANDOM_PASSWORD_menu()  {
-	on_off_toggle ENABLE_RANDOM_PASSWORD
-	UNSAVED_CHANGES=true
-}
-
-function CREATE_USER_GROUPS_tag()   { echo " ├ User groups"; }
-function CREATE_USER_GROUPS_label() { echo " ├ (${CREATE_USER_GROUPS})"; }
-function CREATE_USER_GROUPS_show()  { [[ -n "$CREATE_USER" ]]; }
-function CREATE_USER_GROUPS_help()  { echo "Comma-separated list of groups for the new user account. Default: users,wheel,audio,video,usb. Desktop environments may add additional groups automatically."; }
-function CREATE_USER_GROUPS_menu()  {
-	dialog \
-		--title "User groups" \
-		--inputbox "Enter comma-separated groups for user '$CREATE_USER' (e.g., users,wheel,audio,video,usb):" \
-		"${INPUTBOX_SIZE[@]}" "$CREATE_USER_GROUPS"
-	CREATE_USER_GROUPS="$dialog_out"
-	UNSAVED_CHANGES=true
-}
-
 function ENABLE_BINPKG_tag()   { echo "Enable binary packages"; }
 function ENABLE_BINPKG_label() { on_off_label "$ENABLE_BINPKG"; }
 function ENABLE_BINPKG_show()  { return 0; }
@@ -1757,6 +1556,25 @@ function ENABLE_BINPKG_help()  { echo "Use binary packages if available."; }
 function ENABLE_BINPKG_menu()  {
 	on_off_toggle "ENABLE_BINPKG"
 	UNSAVED_CHANGES=true
+}
+
+function KERNEL_TYPE_tag()   { echo "Kernel type"; }
+function KERNEL_TYPE_label() { echo "($KERNEL_TYPE)"; }
+function KERNEL_TYPE_show()  { return 0; }
+function KERNEL_TYPE_help()  { echo "Select which kernel package to install. 'bin' installs the pre-built binary kernel (gentoo-kernel-bin), while 'source' builds the kernel from source (gentoo-kernel) using the same distribution config."; }
+function KERNEL_TYPE_menu()  {
+	if menu_radiolist_labeled \
+		"Select kernel type" \
+		"Select which kernel package to install. The 'bin' option installs a pre-built binary kernel, while 'source' compiles the kernel from source locally using the same distribution configuration." \
+		"$KERNEL_TYPE" \
+		"${KERNEL_TYPES[@]}"
+	then
+		KERNEL_TYPE="$dialog_out"
+		UNSAVED_CHANGES=true
+	else
+		# Return to menu
+		true
+	fi
 }
 
 function ROOT_SSH_AUTHORIZED_KEYS_tag()   { echo "Authorized keys (root)"; }
@@ -1787,278 +1605,6 @@ EOF
 	UNSAVED_CHANGES=true
 }
 
-function DESKTOP_ENVIRONMENT_tag()   { echo "Desktop Environment"; }
-function DESKTOP_ENVIRONMENT_label() { echo "(${DESKTOP_ENVIRONMENT:-none})"; }
-function DESKTOP_ENVIRONMENT_show()  { return 0; }
-function DESKTOP_ENVIRONMENT_help()  { echo "Choose your desktop environment. Leave empty for no DE (server/CLI only). Each DE comes with its own set of applications and tools."; }
-function DESKTOP_ENVIRONMENT_menu()  {
-	local previous_de="$DESKTOP_ENVIRONMENT"
-	
-	if menu_radiolist_labeled \
-		"Select Desktop Environment" \
-		"Choose your desktop environment. Each DE provides a complete graphical user interface with applications.\n\nSelect 'none' for server installations or if you prefer to install a DE manually later." \
-		"${DESKTOP_ENVIRONMENT:-none}" \
-		"none" "No desktop environment (server/CLI only)" \
-		"kde" "KDE Plasma - Feature-rich desktop environment" \
-		"gnome" "GNOME - Modern, simple desktop environment" \
-		"hyprland" "Hyprland - Modern Wayland compositor (requires GURU overlay)" \
-		"xfce" "XFCE - Lightweight desktop environment" \
-		"lxqt" "LXQt - Lightweight Qt-based desktop" \
-		"cinnamon" "Cinnamon - Traditional desktop environment" \
-		"mate" "MATE - GNOME 2 fork" \
-		"budgie" "Budgie - Modern, elegant desktop" \
-		"i3" "i3 - Tiling window manager" \
-		"sway" "Sway - Wayland tiling window manager" \
-		"openbox" "Openbox - Lightweight window manager" \
-		"fluxbox" "Fluxbox - Lightweight window manager" \
-		"enlightenment" "Enlightenment - Advanced window manager" \
-		"pantheon" "Pantheon - Elementary OS desktop"
-	then
-		DESKTOP_ENVIRONMENT="$dialog_out"
-		[[ "$DESKTOP_ENVIRONMENT" == "none" ]] && DESKTOP_ENVIRONMENT=""
-		UNSAVED_CHANGES=true
-		
-		# Handle Hyprland overlay requirement
-		if [[ "$DESKTOP_ENVIRONMENT" == "hyprland" ]]; then
-			# Check if guru overlay already exists
-			local guru_exists=false
-			for overlay in "${OVERLAY_NAMES[@]}"; do
-				if [[ "$overlay" == "guru" ]]; then
-					guru_exists=true
-					break
-				fi
-			done
-			
-			# Add guru overlay if not exists
-			if [[ "$guru_exists" == false ]]; then
-				OVERLAY_NAMES+=("guru")
-				dialog --title "Hyprland Configuration" \
-					--msgbox "\nHyprland and its ecosystem packages require the GURU overlay.\n\nThe 'guru' overlay has been automatically added to your configuration.\n\nThis overlay contains community-maintained packages including:\n- Hyprland (compositor)\n- waybar (status bar)\n- wofi (launcher)\n- hypridle, hyprlock, etc." \
-					14 70
-			else
-				dialog --title "Hyprland Configuration" \
-					--msgbox "\nHyprland selected.\n\nThe required 'guru' overlay is already in your configuration." \
-					9 60
-			fi
-		elif [[ "$previous_de" == "hyprland" && "$DESKTOP_ENVIRONMENT" != "hyprland" ]]; then
-			# Changed from Hyprland to another DE
-			# Check if guru overlay exists and optionally remove it
-			local guru_index=-1
-			local i=0
-			for overlay in "${OVERLAY_NAMES[@]}"; do
-				if [[ "$overlay" == "guru" ]]; then
-					guru_index=$i
-					break
-				fi
-				((i++))
-			done
-			
-			if [[ $guru_index -ge 0 ]]; then
-				dialog --title "Remove GURU Overlay?" \
-					--yesno "\nYou've changed from Hyprland to ${DESKTOP_ENVIRONMENT:-none}.\n\nThe 'guru' overlay was added for Hyprland.\nDo you want to remove it?" \
-					10 60
-					
-				if [[ $? -eq 0 ]]; then
-					# Remove guru overlay
-					local new_overlays=()
-					local j=0
-					for overlay in "${OVERLAY_NAMES[@]}"; do
-						if [[ $j -ne $guru_index ]]; then
-							new_overlays+=("$overlay")
-						fi
-						((j++))
-					done
-					OVERLAY_NAMES=("${new_overlays[@]}")
-					UNSAVED_CHANGES=true
-				fi
-			fi
-		fi
-	else
-		# Return to menu
-		true
-	fi
-}
-
-function DESKTOP_ADDITIONAL_PACKAGES_tag()   { echo " ├ DE Additional packages"; }
-function DESKTOP_ADDITIONAL_PACKAGES_label() { echo " ├ (${#DESKTOP_ADDITIONAL_PACKAGES[@]} packages)"; }
-function DESKTOP_ADDITIONAL_PACKAGES_show()  { [[ -n "$DESKTOP_ENVIRONMENT" ]]; }
-function DESKTOP_ADDITIONAL_PACKAGES_help()  { echo "Enter additional packages specific to your desktop environment that should be installed."; }
-function DESKTOP_ADDITIONAL_PACKAGES_menu()  {
-	dialog \
-		--title "Desktop Environment Additional Packages" \
-		--inputbox "Enter additional DE-specific packages (portage package ATOMs) to install. Delimited by space." \
-		"${INPUTBOX_SIZE[@]}" "${DESKTOP_ADDITIONAL_PACKAGES[*]}"
-	# shellcheck disable=SC2206
-	DESKTOP_ADDITIONAL_PACKAGES=($dialog_out)
-	UNSAVED_CHANGES=true
-}
-
-function HYPRLAND_CONFIG_tag()   { echo " ├ Hyprland Configuration"; }
-function HYPRLAND_CONFIG_label() {
-	local lines
-	lines=$(echo "$HYPRLAND_CONFIG" | wc -l)
-	echo " ├ ($lines lines)"
-}
-function HYPRLAND_CONFIG_show()  { [[ "$DESKTOP_ENVIRONMENT" == "hyprland" ]]; }
-function HYPRLAND_CONFIG_help()  { echo "EXPERIMENTAL: Edit the hyprland.conf that will be installed for the new user. Leave blank to skip creating a default config."; }
-function HYPRLAND_CONFIG_menu()  {
-	local tmpfile
-	tmpfile="$(mktemp)" || die "Could not create temporary file."
-	echo "$HYPRLAND_CONFIG" > "$tmpfile"
-
-	dialog \
-		--title "Hyprland Configuration" \
-		--editbox "$tmpfile" "${EDITTEXT_SIZE[@]}"
-	
-	local diag_exit="$?"
-	if [[ $diag_exit == 0 ]]; then
-		HYPRLAND_CONFIG="$dialog_out"
-		UNSAVED_CHANGES=true
-	fi
-	rm -f "$tmpfile"
-}
-
-function ENABLE_DISPLAY_MANAGER_tag()   { echo " ├ Display Manager"; }
-function ENABLE_DISPLAY_MANAGER_label() { echo " ├ ($ENABLE_DISPLAY_MANAGER)"; }
-function ENABLE_DISPLAY_MANAGER_show()  { [[ -n "$DESKTOP_ENVIRONMENT" ]]; }
-function ENABLE_DISPLAY_MANAGER_help()  { echo "Choose your display manager (login screen). 'auto' will select the best option for your chosen desktop environment."; }
-function ENABLE_DISPLAY_MANAGER_menu()  {
-	if menu_radiolist_labeled \
-		"Select Display Manager" \
-		"Choose your display manager (login screen).\n\n'auto' will automatically select the best option for your chosen desktop environment.\n\n'none' disables the display manager." \
-		"$ENABLE_DISPLAY_MANAGER" \
-		"auto" "Automatic (DE default)" \
-		"sddm" "SDDM (KDE Plasma default)" \
-		"gdm" "GDM (GNOME default)" \
-		"lightdm" "LightDM (universal)" \
-		"lxdm" "LXDM (lightweight)" \
-		"slim" "SLiM (minimal)" \
-		"none" "No display manager"
-	then
-		ENABLE_DISPLAY_MANAGER="$dialog_out"
-		UNSAVED_CHANGES=true
-	else
-		# Return to menu
-		true
-	fi
-}
-
-function ENABLE_NETWORK_MANAGER_tag()   { echo " ├ Network Manager"; }
-function ENABLE_NETWORK_MANAGER_label() { echo " ├ ($ENABLE_NETWORK_MANAGER)"; }
-function ENABLE_NETWORK_MANAGER_show()  { [[ -n "$DESKTOP_ENVIRONMENT" ]]; }
-function ENABLE_NETWORK_MANAGER_help()  { echo "Choose your network manager. 'auto' will select the best option for your chosen desktop environment."; }
-function ENABLE_NETWORK_MANAGER_menu()  {
-	if menu_radiolist_labeled \
-		"Network Manager" \
-		"Choose your network management solution. NetworkManager provides GUI configuration and automatic network switching. ConnMan is a lightweight alternative." \
-		"${ENABLE_NETWORK_MANAGER:-auto}" \
-		"auto" "Auto-detect based on desktop environment" \
-		"networkmanager" "NetworkManager (recommended for desktop)" \
-		"connman" "ConnMan (lightweight alternative)" \
-		"none" "No network manager (manual configuration)"
-	then
-		ENABLE_NETWORK_MANAGER="$dialog_out"
-		UNSAVED_CHANGES=true
-	fi
-}
-
-function BOOTLOADER_TYPE_tag()   { echo " ├ Bootloader Type"; }
-function BOOTLOADER_TYPE_label() { echo " ├ ($BOOTLOADER_TYPE)"; }
-function BOOTLOADER_TYPE_show()  { return 0; }
-function BOOTLOADER_TYPE_help()  { echo "Choose your bootloader. GRUB is the most flexible, systemd-boot is lightweight, and EFI Stub provides direct kernel booting."; }
-function BOOTLOADER_TYPE_menu()  {
-	if menu_radiolist_labeled \
-		"Select Bootloader" \
-		"Choose your bootloader solution. Each option has different features and complexity levels.\n\nGRUB: Most flexible, supports multiple OS, customizable\nsystemd-boot: Lightweight, fast, good Secure Boot support\nEFI Stub: Minimalist, direct kernel booting, fastest boot" \
-		"${BOOTLOADER_TYPE:-grub}" \
-		"grub" "GRUB (most flexible, recommended)" \
-		"systemd-boot" "systemd-boot (lightweight, fast)" \
-		"efistub" "EFI Stub (minimalist, direct boot)"; then
-		BOOTLOADER_TYPE="$dialog_out"
-		UNSAVED_CHANGES=true
-	fi
-}
-
-function ENABLE_DUAL_BOOT_DETECTION_tag()   { echo " ├ Dual Boot Detection"; }
-function ENABLE_DUAL_BOOT_DETECTION_label() { on_off_label "$ENABLE_DUAL_BOOT_DETECTION" " ├ "; }
-function ENABLE_DUAL_BOOT_DETECTION_show()  { [[ "${BOOTLOADER_TYPE:-grub}" == "grub" ]]; }
-function ENABLE_DUAL_BOOT_DETECTION_help()  { echo "Enable os-prober to detect other operating systems for dual boot support. This will automatically add Windows, Linux, and other OS entries to your GRUB menu."; }
-function ENABLE_DUAL_BOOT_DETECTION_menu()  {
-	on_off_toggle ENABLE_DUAL_BOOT_DETECTION
-	UNSAVED_CHANGES=true
-}
-
-function GRUB_CUSTOM_PARAMS_tag()   { echo " ├ Custom GRUB Parameters"; }
-function GRUB_CUSTOM_PARAMS_label() { echo " ├ ${#GRUB_CUSTOM_PARAMS[@]} parameters"; }
-function GRUB_CUSTOM_PARAMS_show()  { [[ "${BOOTLOADER_TYPE:-grub}" == "grub" ]]; }
-function GRUB_CUSTOM_PARAMS_help()  { echo "Add custom kernel parameters to GRUB. These will be appended to the default kernel command line. Example: 'intel_pstate=performance quiet splash'"; }
-function GRUB_CUSTOM_PARAMS_menu()  {
-	dialog \
-		--title "Custom GRUB Parameters" \
-		--inputbox "Enter custom kernel parameters for GRUB. These will be added to the kernel command line.\n\nExample: intel_pstate=performance quiet splash\n\nSeparate multiple parameters with spaces." \
-		"${INPUTBOX_SIZE[@]}" "${GRUB_CUSTOM_PARAMS[*]}"
-	# shellcheck disable=SC2206
-	GRUB_CUSTOM_PARAMS=($dialog_out)
-	UNSAVED_CHANGES=true
-}
-
-function ENABLE_PERFORMANCE_OPTIMIZATION_tag()   { echo "Performance Optimization"; }
-function ENABLE_PERFORMANCE_OPTIMIZATION_label() { on_off_label "$ENABLE_PERFORMANCE_OPTIMIZATION"; }
-function ENABLE_PERFORMANCE_OPTIMIZATION_show()  { return 0; }
-function ENABLE_PERFORMANCE_OPTIMIZATION_help()  {
-    echo "This option automates a core Gentoo best practice for system performance.
-
-If enabled (Recommended):
-The installer will add tools (cpuid2cpuflags, resolve-march-native) to the new system. It will then automatically detect your specific CPU and write optimized compilation flags (CFLAGS, CXXFLAGS, CPU_FLAGS_X86) to /etc/portage/make.conf. This ensures that all software compiled on your system is tailored for maximum performance on your hardware.
-
-If disabled:
-The system will use generic, safe compilation flags from the default profile. The resulting system will be perfectly functional but not specifically tuned to your CPU, potentially leaving performance on the table.
-
-For a true Gentoo experience, leaving this enabled is highly recommended."
-}
-function ENABLE_PERFORMANCE_OPTIMIZATION_menu()  {
-	on_off_toggle ENABLE_PERFORMANCE_OPTIMIZATION
-	UNSAVED_CHANGES=true
-}
-
-
-
-function ENABLE_DISPLAY_BACKEND_TESTING_tag()   { echo "Display Backend Testing"; }
-function ENABLE_DISPLAY_BACKEND_TESTING_label() { on_off_label "$ENABLE_DISPLAY_BACKEND_TESTING"; }
-function ENABLE_DISPLAY_BACKEND_TESTING_show()  { return 0; }
-function ENABLE_DISPLAY_BACKEND_TESTING_help()  { echo "Enable display backend testing tools for optimizing GTK, SDL, and SPICE performance in VM environments."; }
-function ENABLE_DISPLAY_BACKEND_TESTING_menu()  {
-	on_off_toggle ENABLE_DISPLAY_BACKEND_TESTING
-	UNSAVED_CHANGES=true
-}
-
-function ENABLE_GPU_BENCHMARKING_tag()   { echo "GPU Benchmarking"; }
-function ENABLE_GPU_BENCHMARKING_label() { on_off_label "$ENABLE_GPU_BENCHMARKING"; }
-function ENABLE_GPU_BENCHMARKING_show()  { return 0; }
-function ENABLE_GPU_BENCHMARKING_help()  { echo "Enable GPU benchmarking tools for performance testing and optimization in VM environments."; }
-function ENABLE_GPU_BENCHMARKING_menu()  {
-	on_off_toggle ENABLE_GPU_BENCHMARKING
-	UNSAVED_CHANGES=true
-}
-
-function ENABLE_KDE_POLKIT_ADMIN_tag()   { echo "KDE Polkit Admin"; }
-function ENABLE_KDE_POLKIT_ADMIN_label() { on_off_label "$ENABLE_KDE_POLKIT_ADMIN"; }
-function ENABLE_KDE_POLKIT_ADMIN_show()  { [[ "$DESKTOP_ENVIRONMENT" == "kde" ]]; }
-function ENABLE_KDE_POLKIT_ADMIN_help()  { echo "Grant administrative privileges to users in the wheel group for KDE system dialogs. This allows non-root users to authenticate for system operations."; }
-function ENABLE_KDE_POLKIT_ADMIN_menu()  {
-	on_off_toggle ENABLE_KDE_POLKIT_ADMIN
-	UNSAVED_CHANGES=true
-}
-
-function ENABLE_KDE_KWALLET_PAM_tag()   { echo "KDE KWallet PAM"; }
-function ENABLE_KDE_KWALLET_PAM_label() { on_off_label "$ENABLE_KDE_KWALLET_PAM"; }
-function ENABLE_KDE_KWALLET_PAM_show()  { [[ "$DESKTOP_ENVIRONMENT" == "kde" ]]; }
-function ENABLE_KDE_KWALLET_PAM_help()  { echo "Enable KWallet PAM integration for automatic unlocking when logging in via SDDM. This provides seamless password storage and auto-unlocking functionality."; }
-function ENABLE_KDE_KWALLET_PAM_menu()  {
-	on_off_toggle ENABLE_KDE_KWALLET_PAM
-	UNSAVED_CHANGES=true
-}
-
 function ADDITIONAL_PACKAGES_tag()   { echo "Additional packages"; }
 function ADDITIONAL_PACKAGES_label() { echo "${#ADDITIONAL_PACKAGES[@]} packages"; }
 function ADDITIONAL_PACKAGES_show()  { return 0; }
@@ -2072,185 +1618,6 @@ function ADDITIONAL_PACKAGES_menu()  {
 	ADDITIONAL_PACKAGES=($dialog_out)
 	UNSAVED_CHANGES=true
 }
-
-################################################
-# Package Management Functions
-
-function PACKAGE_USE_RULES_tag()   { echo "Package USE rules"; }
-function PACKAGE_USE_RULES_label() { echo "${#PACKAGE_USE_RULES[@]} rules"; }
-function PACKAGE_USE_RULES_show()  { return 0; }
-function PACKAGE_USE_RULES_help()  { echo "Configure package USE flags. Format: package atom followed by USE flags (e.g., 'dev-lang/python -tk +sqlite')."; }
-function PACKAGE_USE_RULES_menu()  {
-	package_use_rules_manager
-}
-
-function PACKAGE_KEYWORDS_tag()   { echo "Package keywords"; }
-function PACKAGE_KEYWORDS_label() { echo "${#PACKAGE_KEYWORDS[@]} keywords"; }
-function PACKAGE_KEYWORDS_show()  { return 0; }
-function PACKAGE_KEYWORDS_help()  { echo "Configure package keywords for testing/unstable packages. Format: package atom followed by keywords (e.g., 'dev-lang/python ~amd64')."; }
-function PACKAGE_KEYWORDS_menu()  {
-	package_keywords_manager
-}
-
-
-
-function OVERLAY_MANAGER_tag()   { echo "Portage overlays"; }
-function OVERLAY_MANAGER_label() { 
-	if [[ ${#OVERLAY_NAMES[@]} -eq 0 ]]; then
-		echo "No overlays configured"
-	elif [[ ${#OVERLAY_NAMES[@]} -eq 1 ]]; then
-		echo "1 overlay: ${OVERLAY_NAMES[0]}"
-	else
-		local overlay_list="${OVERLAY_NAMES[*]}"
-		if [[ ${#overlay_list} -gt 30 ]]; then
-			echo "${#OVERLAY_NAMES[@]} overlays: $(ellipsis 25 "$overlay_list")"
-		else
-			echo "${#OVERLAY_NAMES[@]} overlays: $overlay_list"
-		fi
-	fi
-}
-function OVERLAY_MANAGER_show()  { return 0; }
-function OVERLAY_MANAGER_help()  { echo "Manage portage overlays using modern eselect repository. Add, remove, or configure overlay names (e.g., guru, steam-overlay)."; }
-function OVERLAY_MANAGER_menu()  {
-    while true; do
-        local configured_overlays=()
-        local menu_description
-        
-        if [[ ${#OVERLAY_NAMES[@]} -eq 0 ]]; then
-            # Deskripsi saat tidak ada overlay
-            menu_description="\nNo overlays configured.\n\nChoose 'Add' to add your first overlay."
-        else
-            # Buat daftar overlay untuk ditampilkan
-            menu_description="\nConfigured overlays:\n\nSelect an overlay to REMOVE it,\nor choose 'Add' to add a new one."
-            local i=1
-            for name in "${OVERLAY_NAMES[@]}"; do
-                configured_overlays+=("$i")
-                configured_overlays+=("$name")
-                ((i++))
-            done
-        fi
-
-        # Tampilkan menu utama dengan tombol "Add", "Remove", dan "Back"
-        dialog --title "Portage Overlays (${#OVERLAY_NAMES[@]} configured)" \
-               --extra-button --extra-label "Add" \
-               --cancel-label "Back" \
-               --ok-label "Remove" \
-               --menu "$menu_description" \
-               "${MENU_SIZE[@]}" \
-               "${configured_overlays[@]}"
-
-        local diag_exit="$?"
-        local choice="$dialog_out"
-
-        case "$diag_exit" in
-            0) # Tombol <Remove>
-                if [[ -z "$choice" ]]; then
-                    # Jika tidak ada item yang dipilih (misalnya daftar kosong)
-                    dialog --title "Info" --msgbox "\nNo overlay selected to remove." 8 50
-                    continue
-                fi
-                
-                local index_to_remove=$((choice - 1))
-                if [[ $index_to_remove -ge 0 && $index_to_remove -lt ${#OVERLAY_NAMES[@]} ]]; then
-                    local overlay_to_remove="${OVERLAY_NAMES[$index_to_remove]}"
-                    
-                    dialog --title "Confirm Removal" \
-                           --yesno "\nAre you sure you want to remove the overlay '$overlay_to_remove'?" 8 50
-                           
-                    if [[ $? -eq 0 ]]; then
-                        unset 'OVERLAY_NAMES[index_to_remove]'
-                        OVERLAY_NAMES=("${OVERLAY_NAMES[@]}") # Re-index array
-                        UNSAVED_CHANGES=true
-                    fi
-                fi
-                ;;
-
-            1) # Tombol <Back> atau <Cancel>
-                break
-                ;;
-
-            3) # Tombol <Add> (Extra button)
-                dialog --title "Add Overlay" \
-                       --inputbox "\nEnter the name of the new overlay (e.g., guru, steam-overlay):" \
-                       10 60 ""
-                       
-                if [[ $? -eq 0 && -n "$dialog_out" ]]; then
-                    # Cek duplikat
-                    local already_exists=false
-                    for existing in "${OVERLAY_NAMES[@]}"
-                    do
-                        if [[ "$existing" == "$dialog_out" ]]; then
-                            already_exists=true
-                            break
-                        fi
-                    done
-                    
-                    if [[ "$already_exists" == true ]]; then
-                        dialog --title "Warning" --msgbox "\nOverlay '$dialog_out' is already configured." 8 50
-                    else
-                        OVERLAY_NAMES+=("$dialog_out")
-                        UNSAVED_CHANGES=true
-                    fi
-                fi
-                ;;
-                
-            *) # ESC
-                break
-                ;;
-        esac
-    done
-}
-
-function ENABLE_AUTO_CLEANUP_tag()   { echo "Auto cleanup on exit"; }
-function ENABLE_AUTO_CLEANUP_label() { on_off_label "$ENABLE_AUTO_CLEANUP"; }
-function ENABLE_AUTO_CLEANUP_show()  { return 0; }
-function ENABLE_AUTO_CLEANUP_help()  { echo "Automatically cleanup the environment when the installer exits normally. This ensures a clean state for future installations."; }
-function ENABLE_AUTO_CLEANUP_menu()  {
-	on_off_toggle ENABLE_AUTO_CLEANUP
-	UNSAVED_CHANGES=true
-}
-
-function CLEANUP_ON_INTERRUPT_tag()   { echo "Cleanup on interrupt"; }
-function CLEANUP_ON_INTERRUPT_label() { on_off_label "$CLEANUP_ON_INTERRUPT"; }
-function CLEANUP_ON_INTERRUPT_show()  { return 0; }
-function CLEANUP_ON_INTERRUPT_help()  { echo "Automatically cleanup the environment when the installer is interrupted (Ctrl+C). This prevents leaving mounted filesystems and active devices."; }
-function CLEANUP_ON_INTERRUPT_menu()  {
-	on_off_toggle CLEANUP_ON_INTERRUPT
-	UNSAVED_CHANGES=true
-}
-
-# Package USE rules manager
-function package_use_rules_manager() {
-	dialog \
-		--title "Package USE Rules" \
-		--inputbox "Enter package USE rules (portage package ATOMs with USE flags). Delimited by space.\n\nExample: dev-lang/python -tk +sqlite app-office/libreoffice java" \
-		"${INPUTBOX_SIZE[@]}" \
-		"${PACKAGE_USE_RULES[*]}"
-	
-	# shellcheck disable=SC2206
-	PACKAGE_USE_RULES=($dialog_out)
-	UNSAVED_CHANGES=true
-}
-
-# Package keywords manager
-function package_keywords_manager() {
-	dialog \
-		--title "Package Keywords" \
-		--inputbox "Enter package keywords (portage package ATOMs with keywords). Delimited by space.\n\nExample: media-libs/libgd ~amd64 sys-kernel/gentoo-kernel -~amd64" \
-		"${INPUTBOX_SIZE[@]}" \
-		"${PACKAGE_KEYWORDS[*]}"
-	
-	# shellcheck disable=SC2206
-	PACKAGE_KEYWORDS=($dialog_out)
-	UNSAVED_CHANGES=true
-}
-
-
-# Accept keywords manager
-
-
-
-
 
 
 ################################################
@@ -2316,38 +1683,9 @@ MUSL=\$([[ \$STAGE3_VARIANT == *musl* ]] && echo "true" || echo "false")
 
 ADDITIONAL_PACKAGES=(${ADDITIONAL_PACKAGES[@]@Q})
 ENABLE_SSHD=${ENABLE_SSHD@Q}
-CREATE_USER=${CREATE_USER@Q}
-ENABLE_RANDOM_PASSWORD=${ENABLE_RANDOM_PASSWORD@Q}
-CREATE_USER_GROUPS=${CREATE_USER_GROUPS@Q}
 ENABLE_BINPKG=${ENABLE_BINPKG@Q}
+KERNEL_TYPE=${KERNEL_TYPE@Q}
 ROOT_SSH_AUTHORIZED_KEYS=${ROOT_SSH_AUTHORIZED_KEYS@Q}
-
-# Performance and Testing Configuration
-ENABLE_PERFORMANCE_OPTIMIZATION=${ENABLE_PERFORMANCE_OPTIMIZATION@Q}
-ENABLE_DISPLAY_BACKEND_TESTING=${ENABLE_DISPLAY_BACKEND_TESTING@Q}
-ENABLE_GPU_BENCHMARKING=${ENABLE_GPU_BENCHMARKING@Q}
-
-
-################################################
-# Desktop Environment Configuration
-
-DESKTOP_ENVIRONMENT=${DESKTOP_ENVIRONMENT@Q}
-DESKTOP_ADDITIONAL_PACKAGES=(${DESKTOP_ADDITIONAL_PACKAGES[@]@Q})
-HYPRLAND_CONFIG=${HYPRLAND_CONFIG@Q}
-ENABLE_DISPLAY_MANAGER=${ENABLE_DISPLAY_MANAGER@Q}
-ENABLE_NETWORK_MANAGER=${ENABLE_NETWORK_MANAGER@Q}
-
-
-################################################
-# Package Management Configuration
-
-PACKAGE_USE_RULES=(${PACKAGE_USE_RULES[@]@Q})
-PACKAGE_KEYWORDS=(${PACKAGE_KEYWORDS[@]@Q})
-OVERLAY_NAMES=(${OVERLAY_NAMES[@]@Q})
-
-# Cleanup Configuration
-ENABLE_AUTO_CLEANUP=${ENABLE_AUTO_CLEANUP@Q}
-CLEANUP_ON_INTERRUPT=${CLEANUP_ON_INTERRUPT@Q}
 
 
 ################################################

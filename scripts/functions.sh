@@ -7,17 +7,13 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
 
 function sync_time() {
 	einfo "Syncing time"
-	
-	# Try to sync time using available methods, but don't require NTP
 	if command -v ntpd &> /dev/null; then
-		einfo "Using ntpd to sync time"
 		try ntpd -g -q
 	elif command -v chrony &> /dev/null; then
-		einfo "Using chrony to sync time"
+		# See https://github.com/oddlama/gentoo-install/pull/122
 		try chronyd -q
 	else
-		# Simple fallback: use HTTP header to get current time
-		einfo "Using HTTP header fallback to sync time"
+		# why am I doing this?
 		try date -s "$(curl -sI http://example.com | grep -i ^date: | cut -d' ' -f3-)"
 	fi
 
@@ -84,6 +80,7 @@ function prepare_installation_environment() {
 		gpg
 		hwclock
 		lsblk
+		ntpd
 		partprobe
 		python3
 		"?rhash"
@@ -105,7 +102,7 @@ function prepare_installation_environment() {
 	# Check for existence of required programs
 	check_wanted_programs "${wanted_programs[@]}"
 
-	# Sync time now to prevent issues later (optional, won't fail if NTP unavailable)
+	# Sync time now to prevent issues later
 	sync_time
 
 	maybe_exec 'after_prepare_environment'
@@ -255,30 +252,17 @@ function disk_create_partition() {
 		|| die "Could not create new gpt partition ($new_id) on '$device' ($id)"
 	partprobe "$device"
 
-	# Wait for udev to finish processing the new partition
-	einfo "Waiting for partition to become available..."
-	
-	# Use udevadm settle to wait for udev to finish processing device events
-	# This is more reliable than arbitrary sleep loops
-	if command -v udevadm >/dev/null 2>&1; then
-		einfo "Using udevadm settle to wait for partition availability"
-		udevadm settle --timeout=30 || ewarn "udevadm settle timed out, continuing anyway"
-	else
-		einfo "udevadm not available, using fallback method"
-		# Fallback: brief wait for partition to appear
-		local new_device
-		new_device="$(resolve_device_by_id "$new_id")" \
-			|| die "Could not resolve new device with id=$new_id"
-		
-		# Wait up to 5 seconds with shorter intervals
-		for i in {1..5}; do
-			[[ -e "$new_device" ]] && break
-			[[ "$i" -eq 1 ]] && printf "Waiting for partition (%s) to appear..." "$new_device"
-			printf " %s" "$((5 - i + 1))"
-			sleep 0.5
-			[[ "$i" -eq 5 ]] && echo
-		done
-	fi
+	# On some system, we need to wait a bit for the partition to show up.
+	local new_device
+	new_device="$(resolve_device_by_id "$new_id")" \
+		|| die "Could not resolve new device with id=$new_id"
+	for i in {1..10}; do
+		[[ -e "$new_device" ]] && break
+		[[ "$i" -eq 1 ]] && printf "Waiting for partition (%s) to appear..." "$new_device"
+		printf " %s" "$((10 - i + 1))"
+		sleep 1
+		[[ "$i" -eq 10 ]] && echo
+	done
 }
 
 function disk_create_raid() {
@@ -839,69 +823,16 @@ function bind_repo_dir() {
 		|| die "Could not bind mount '$GENTOO_INSTALL_REPO_DIR_ORIGINAL' to '$GENTOO_INSTALL_REPO_BIND'"
 }
 
-function show_stage3_info() {
-	local stage3_type="$1"
-	local desktop_env="$2"
-	
-	einfo "=== Stage 3 Selection Information ==="
-	if [[ -n "$desktop_env" ]]; then
-		einfo "Desktop Environment: $desktop_env"
-		einfo "Stage 3 Type: Desktop Profile ($stage3_type)"
-		einfo "Benefits:"
-		einfo "  - Pre-configured USE flags for desktop environments"
-		einfo "  - Optimized for desktop usage"
-		einfo "  - Includes common desktop packages and configurations"
-		einfo "  - Faster desktop environment setup"
-	else
-		einfo "Desktop Environment: None (Server/CLI mode)"
-		einfo "Stage 3 Type: Standard Profile ($stage3_type)"
-		einfo "Benefits:"
-		einfo "  - Minimal base system"
-		einfo "  - Lightweight installation"
-		einfo "  - Suitable for servers and minimal systems"
-	fi
-	einfo "Architecture: $GENTOO_ARCH"
-	einfo "Init System: $STAGE3_VARIANT"
-	einfo "====================================="
-}
-
 function download_stage3() {
 	cd "$TMP_DIR" \
 		|| die "Could not cd into '$TMP_DIR'"
 
 	local STAGE3_BASENAME_FINAL
-	local stage3_type
-	
-	# Check if user selected a desktop environment
-	if [[ -n "$DESKTOP_ENVIRONMENT" ]]; then
-		einfo "Desktop environment selected: $DESKTOP_ENVIRONMENT"
-		einfo "Will download desktop profile Stage 3 for better DE support"
-		
-		# Use desktop profile Stage 3
-		if [[ "$STAGE3_VARIANT" == *systemd* ]]; then
-			STAGE3_BASENAME_FINAL="stage3-$GENTOO_ARCH-desktop-systemd"
-			stage3_type="desktop-systemd"
-		else
-			STAGE3_BASENAME_FINAL="stage3-$GENTOO_ARCH-desktop-openrc"
-			stage3_type="desktop-openrc"
-		fi
-		
-		einfo "Selected desktop profile: $STAGE3_BASENAME_FINAL"
+	if [[ ("$GENTOO_ARCH" == "amd64" && "$STAGE3_VARIANT" == *x32*) || ("$GENTOO_ARCH" == "x86" && -n "$GENTOO_SUBARCH") ]]; then
+		STAGE3_BASENAME_FINAL="$STAGE3_BASENAME_CUSTOM"
 	else
-		einfo "No desktop environment selected, using standard Stage 3"
-		
-		# Use standard Stage 3 (existing logic)
-		if [[ ("$GENTOO_ARCH" == "amd64" && "$STAGE3_VARIANT" == *x32*) || ("$GENTOO_ARCH" == "x86" && -n "$GENTOO_SUBARCH") ]]; then
-			STAGE3_BASENAME_FINAL="$STAGE3_BASENAME_CUSTOM"
-			stage3_type="custom"
-		else
-			STAGE3_BASENAME_FINAL="$STAGE3_BASENAME"
-			stage3_type="standard"
-		fi
+		STAGE3_BASENAME_FINAL="$STAGE3_BASENAME"
 	fi
-
-	# Show Stage 3 information to user
-	show_stage3_info "$stage3_type" "$DESKTOP_ENVIRONMENT"
 
 	local STAGE3_RELEASES="$GENTOO_MIRROR/releases/$GENTOO_ARCH/autobuilds/current-$STAGE3_BASENAME_FINAL/"
 
@@ -1081,55 +1012,4 @@ function enable_service() {
 	else
 		try rc-update add "$1" default
 	fi
-}
-
-function enable_display_manager() {
-	local dm="$1"
-	einfo "Enabling display manager: $dm"
-	
-	case "$dm" in
-		sddm)
-			if [[ $SYSTEMD == "true" ]]; then
-				enable_service sddm
-			else
-				# For OpenRC, we need to create a display-manager service
-				echo 'DISPLAYMANAGER="sddm"' > /etc/conf.d/display-manager
-				enable_service display-manager
-			fi
-			;;
-		gdm)
-			enable_service gdm
-			;;
-		lightdm)
-			enable_service lightdm
-			;;
-		lxdm)
-			enable_service lxdm
-			;;
-		slim)
-			enable_service slim
-			;;
-		*)
-			ewarn "Unknown display manager: $dm"
-			return 1
-			;;
-	esac
-}
-
-function enable_network_manager() {
-	local nm="$1"
-	einfo "Enabling network manager: $nm"
-	
-	case "$nm" in
-		networkmanager)
-			enable_service NetworkManager
-			;;
-		connman)
-			enable_service connman
-			;;
-		*)
-			ewarn "Unknown network manager: $nm"
-			return 1
-			;;
-	esac
 }

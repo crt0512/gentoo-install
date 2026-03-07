@@ -1,0 +1,2 @@
+x11-drivers/nvidia-drivers
+x11-apps/nvidia-settings

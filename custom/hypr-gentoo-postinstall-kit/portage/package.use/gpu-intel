@@ -1,0 +1,2 @@
+# Intel defaults are primarily handled via VIDEO_CARDS in /etc/portage/make.conf.
+# Keep this file for symmetry with other GPU profiles and future Intel-specific overrides.

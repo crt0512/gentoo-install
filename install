@@ -61,16 +61,13 @@ while [[ $# -gt 0 ]]; do
 			echo "                                  location (gentoo.conf). Applies to installation as well"
 			echo "                                  as initial configuration in case it doesn't exist."
 			echo ""
-					echo "Actions:"
-		echo "  -i, --install                 Installs gentoo as configured. This is the default mode,"
-		echo "                                  if the given configuration file exists."
-		echo "  -R, --chroot <DIR> [CMD...]   Chroot into an existing system. The root filesystem"
-		echo "                                  must already be mounted under DIR. All required special"
-		echo "                                  filesystems will be mounted inside, and unmounted when"
-		echo "                                  the chroot exits."
-		echo "  cleanup                       Cleans up the environment after interrupted installations,"
-		echo "                                  unmounting filesystems, closing LUKS devices, stopping"
-		echo "                                  RAID arrays, and removing temporary files."
+			echo "Actions:"
+			echo "  -i, --install                 Installs gentoo as configured. This is the default mode,"
+			echo "                                  if the given configuration file exists."
+			echo "  -R, --chroot <DIR> [CMD...]   Chroot into an existing system. The root filesystem"
+			echo "                                  must already be mounted under DIR. All required special"
+			echo "                                  filesystems will be mounted inside, and unmounted when"
+			echo "                                  the chroot exits."
 			exit 0
 			;;
 		"-c"|"--config")
@@ -93,10 +90,6 @@ while [[ $# -gt 0 ]]; do
 		"__install_gentoo_in_chroot")
 			ACTION="__install_gentoo_in_chroot"
 			;;
-		"cleanup"|"--cleanup")
-			[[ -z $ACTION ]] || die "Multiple actions given"
-			ACTION="cleanup"
-			;;
 		*) die "Invalid option '$1'" ;;
 	esac
 	shift
@@ -117,8 +110,8 @@ if [[ -z "$ACTION" ]]; then
 	fi
 fi
 
-if [[ "$ACTION" != "chroot" && "$ACTION" != "cleanup" ]]; then
-	# Load config if we aren't just chrooting or cleaning up
+if [[ "$ACTION" != "chroot" ]]; then
+	# Load config if we aren't just chrooting
 	[[ -e "$CONFIG" ]] \
 		 || die "Configuration file '$CONFIG' does not exist. To run the configurator, omit '-i' flag or run ./configure"
 
@@ -133,15 +126,11 @@ fi
 [[ $EUID == 0 ]] \
 	|| die "Must be root"
 
-# Only create TMP_DIR for non-cleanup actions
-if [[ "$ACTION" != "cleanup" ]]; then
-	mkdir_or_die 0755 "$TMP_DIR"
-fi
+mkdir_or_die 0755 "$TMP_DIR"
 
 case "$ACTION" in
 	"chroot")  main_chroot "$CHROOT_DIR" "$@" ;;
 	"install") main_install "$@" ;;
 	"__install_gentoo_in_chroot") main_install_gentoo_in_chroot "$@" ;;
-	"cleanup") unmount_and_clean_all ;;
 	*) die "Invalid action '$ACTION'" ;;
 esac

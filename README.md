@@ -1,293 +1,221 @@
-# Gentoo Easy Install
+## About gentoo-install
 
-## About Gentoo Easy Install
+This project aspires to be your favourite way to install gentoo.
+It aims to provide a smooth installation experience, both for beginners and experts.
+You may configure it by using a menuconfig-inspired interface or simply via a config file.
 
-This project is a fork of [oddlama/gentoo-install](https://github.com/oddlama/gentoo-install) with enhanced features and additional functionality. It aspires to be your favourite way to install Gentoo. It aims to provide a smooth, reliable, and secure installation experience for both beginners and experts. You may configure it by using a menuconfig-inspired interface or simply via a config file.
+It supports the most common disk layouts, different file systems like ext4, ZFS and btrfs as well
+as additional layers such as LUKS or mdraid. It also supports both EFI (recommended) and BIOS boot,
+and can be used with systemd or OpenRC as the init system. SSH can also be configured to allow using an automation framework
+like [Ansible](https://github.com/ansible/ansible) or [Fora](https://github.com/oddlama/fora) to automate beyond system installation.
 
-### 🎯 See It In Action
+[Usage](#usage) |
+[Overview](#overview) |
+[Updating the Kernel](#updating-the-kernel) |
+[Recommendations](#recommendations) |
+[FAQ](#troubleshooting-and-faq)
 
-![Configuration TUI Interface](contrib/Configuration_TUI.png)
+![](contrib/screenshot_configure.png)
 
-*The intuitive TUI interface makes Gentoo installation accessible while maintaining full power user control. Every option is explained with detailed help text.*
+This installer might appeal to you if
 
-![User Interaction and Error Recovery](contrib/user_interaction.png)
+- you want to try gentoo without initially investing a lot of time, or fully committing to it yet.
+- you already are a gentoo expert but want an automatic and repeatable best-practices installation.
 
-*When things don't go as planned, the installer provides multiple recovery options. Power users can take manual control at any point, ensuring you're never locked out of your system.*
-
-It supports common disk layouts, various file systems like ext4, ZFS, and Btrfs, and additional layers such as LUKS encryption and mdraid. It robustly supports both **EFI (recommended)** and **BIOS** boot, and can be used with **systemd** or **OpenRC** as the init system.
-
-## 🚀 Latest Improvements
-
-### **Bulletproof Reliability (Latest)**
-- **Comprehensive Unbound Variable Protection**: All configuration arrays are proactively initialized, preventing installation failures due to missing variables
-- **Universal Compatibility**: Works with any configuration file (old, new, minimal, or complete)
-- **Strict Mode Support**: Compatible with `set -u` debugging for better error detection
-- **Proactive Error Prevention**: Issues are prevented before they occur, not just handled after
-
-### **Enhanced Desktop Environment Support**
-- **Automatic Portage Profile Management**: Correct profiles are automatically set for KDE Plasma, GNOME, and other DEs
-- **GURU Overlay Integration**: Automatic GURU overlay management for Hyprland installations
-- **Complete Hyprland Ecosystem**: Automatic dependency detection and installation based on user configuration
-- **Optimized Package Selection**: Essential packages are always installed, additional packages are configurable
-
-### **Modern Overlay Management**
-- **Universal Overlay Support**: Users can add any overlay regardless of desktop environment choice
-- **Modern eselect Repository**: Uses current Gentoo best practices instead of outdated layman
-- **Simplified TUI Interface**: Only overlay names required (e.g., guru, steam-overlay, java-overlay)
-- **Automatic Discovery**: Overlays are automatically found and configured by eselect repository
-- **Flexible Configuration**: Add overlays for gaming, development, or any specific needs
-
-### **Advanced Bootloader Configuration**
-- **Platform-Specific Installation**: Automatic UEFI/BIOS detection and appropriate bootloader setup
-- **RAID Boot Order Management**: Intelligent UEFI boot order optimization for RAID 1 setups
-- **Secure Boot Support**: Optional shim installation and Secure Boot guidance
-- **Multiple Bootloader Options**: GRUB, systemd-boot, and EFI Stub support
-
-## Features
-
-  * **User-Friendly TUI**: An easy-to-use terminal interface to configure every aspect of your installation.
-  * **Flexible Disk Configuration**: Support for various partitioning schemes including LUKS encryption, software RAID (RAID 0/1), LVM, Btrfs-RAID, and ZFS.
-  * **Modern Bootloader Support**: Full support for GRUB, systemd-boot, and direct EFI Stub booting, with automatic detection for UEFI and Secure Boot.
-  * **Desktop Environment Support**: Automated installation for popular desktop environments like KDE Plasma, GNOME, XFCE, and more, with optimized configurations.
-  * **Enhanced KDE Plasma Integration**: Automatic setup of optimal USE flags, KWallet PAM auto-unlocking, and Polkit rules for a seamless experience.
-  * **Hyprland Ecosystem Support**: Complete Wayland compositor installation with automatic GURU overlay management and dependency detection.
-  * **Secure by Default**: Includes options for a hardened SSH configuration, interactive password setting (no plaintext passwords in config), and secure system defaults.
-  * **Automated and Repeatable**: Create a configuration once and use it for consistent, automated installations.
-  * **Robust Error Handling & Cleanup**: The installer can now automatically clean up the environment after an interruption (Ctrl+C) to prevent leaving a broken state.
-
-## 🖥️ TUI Installer Interface
-
-The Gentoo Easy Install provides an intuitive, menu-driven interface that makes configuration simple while maintaining full control for power users.
-
-### 📋 Configuration Interface
-
-**Key Features of the TUI:**
-- **Menu-driven navigation** with arrow keys and Enter
-- **Comprehensive help system** - press F1 or ? for detailed explanations
-- **Real-time validation** of configuration options
-- **Save/Load functionality** for configuration files
-- **Clear categorization** of related settings
-- **Desktop Environment Profiles**: Automatic Portage profile selection for optimal DE functionality
-
-### 🛠️ Power User Control & Error Recovery
-
-**Power User Advantages:**
-- **Emergency Shell Access**: Drop into a shell at any point during installation
-- **Manual Override**: Bypass automated steps and take manual control
-- **Retry Capability**: Most commands can be retried without restarting
-- **Chroot Recovery**: Access the installed system even after failures
-- **Full System Access**: Mount, modify, and fix issues manually
-
-**Why Power Users Win:**
-> *"The installer automates the tedious parts but never locks you out. If something goes wrong, you can always take manual control and fix it yourself. This is Gentoo - you're in charge of your system."*
+Of course, we do encourage everyone to install gentoo manually. You will learn a lot if you
+haven't done so already.
 
 ## Usage
 
-First, boot into a live environment of your choice. An [Arch Linux](https://www.archlinux.org/download/) live ISO is recommended, as it allows the installer to automatically download required programs on the fly.
+First, boot into a live environment of your choice. I recommend using an [Arch Linux](https://www.archlinux.org/download/) live ISO,
+as the installer will then be able to automatically download required programs or setup ZFS support on the fly.
+Afterwards, proceed with the following steps:
 
 ```bash
-# In your live environment, install git if needed:
-# pacman -Sy git (Arch Linux)
-
-# Clone the repository
-git clone "https://github.com/firesand/gentoo-easy-install"
-cd gentoo-easy-install
-
-# Configure the installation to your liking and save it
-./configure
-
-# Begin the installation
-./install
+pacman -Sy git  # (Archlinux) Install git in live environment, then clone:
+git clone "https://github.com/oddlama/gentoo-install"
+cd gentoo-install
+./configure     # configure to your liking, save as gentoo.conf
+./install       # begin installation
 ```
 
-Every option is explained in detail in `gentoo.conf.example` and in the help menus of the TUI configurator. When installing, you will be asked to review the partitioning scheme before any changes are made to your disks.
+Every option is explained in detail in `gentoo.conf.example` and in the help menus of the TUI configurator.
+When installing, you will be asked to review the partitioning before anything critical is done.
 
-## Overview of Installation Steps
+The installer should be able to run without any user supervision after partitioning, but depending
+on the current state of the gentoo repository, you might need to intervene in case a package fails
+to emerge. The critical commands will ask you what to do in case of a failure. If you encounter a
+problem you cannot solve, you might want to consider getting in contact with some experienced people
+on [IRC](https://www.gentoo.org/get-involved/irc-channels/) or [Discord](https://discord.com/invite/gentoolinux).
 
-1.  **Partition Disks**: Partitions and formats disks according to your chosen layout.
-2.  **Download and Extract Stage3**: Fetches and cryptographically verifies the official Gentoo Stage3 tarball.
-3.  **Chroot and Configure Portage**: Enters the new environment, syncs the Portage tree, and selects the fastest mirrors.
-4.  **Base System Configuration**: Sets up hostname, timezone, keymap, and locales.
-5.  **Install Core Packages**: Installs essential packages like the kernel, system tools, and drivers.
-6.  **Install Desktop Environment** (Optional): Installs and configures your chosen DE with correct Portage profiles.
-7.  **Make System Bootable**: Generates `fstab`, builds the `initramfs`, and installs the bootloader.
-8.  **Finalize**: Sets the root password, creates a user account, and installs optional packages.
+If you need to enter an installed system in a chroot to fix something (e.g. after rebooting your live system),
+you can always clone the installer, mount your main drive under `/mnt` and use `./install --chroot /mnt` to
+just chroot into your system.
 
-### 🎯 What to Expect During Installation
+## Overview
 
-The installer provides clear feedback at every step:
+The installer performs the following main steps (in roughly this order),
+with some parts depending on the chosen configuration:
 
-- **Progress Indicators**: Real-time status updates for each installation phase
-- **Error Handling**: Clear error messages with suggested solutions
-- **Recovery Options**: Multiple ways to recover from any issues
-- **Manual Control**: Take over at any point if you prefer manual intervention
-- **Profile Management**: Automatic Portage profile selection for desktop environments
-- **Overlay Management**: Automatic GURU overlay setup for Hyprland installations
+1. Partition disks (highly dependent on configuration)
+2. Download and extract stage3 tarball (with cryptographic verification)
+   \[Continues in chroot from here\]
+3. Setup portage (initial rsync/git sync, run mirrorselect, create zz-autounmask files)
+4. Base system configuration (hostname, timezone, keymap, locales)
+5. Install required packages (git, kernel, ...)
+6. Make system bootable (generate fstab, build initramfs, create efibootmgr/syslinux boot entry)
+7. Ensure minimal working system (automatic wired networking, install eix, set root password)
+   - (Optional) Install sshd with secure config (no password logins)
+   - (Optional) Install additional packages provided in config
 
-> 💡 **Pro Tip**: Even if the automated installation encounters issues, you can always drop into a shell and fix things manually. The installer is designed to be helpful, not restrictive.
+The goal of the installer is just to setup a minimal gentoo system following best-practices.
+Anything beyond that is considered out-of-scope (with the exception of configuring sshd).
+Here are some things that you might want to consider doing after the system installation is finished:
 
-### Secure User Account Creation
+1. Read the news with `eselect news read`.
+2. Compile a custom kernel and remove `gentoo-kernel-bin` (or `gentoo-kernel` if you used `KERNEL_TYPE=source`)
+3. Adjust `/etc/portage/make.conf`
+   - Set `CFLAGS` to `<march_native_flags> -O2 -pipe` for native builds by using the `resolve-march-native` tool
+   - Set `CPU_FLAGS_X86` using the `cpuid2cpuflags` tool
+4. Use a safe umask like `umask 077`
 
-The installer now handles user passwords securely:
+### (Optional) sshd
 
-  * **No Plaintext Passwords**: The `CREATE_USER_PASSWORD` variable has been removed from the configuration to prevent storing passwords in plaintext.
-  * **Interactive by Default**: During installation, you will be prompted to enter a password for the new user.
-  * **Random Password Generation** (Optional): You can choose to have a secure, random password generated for the new user, which will be displayed once upon completion.
+The script can provide a fully configured ssh daemon with reasonably good security settings.
+It will by default only allow ed25519 keys, restrict key exchange
+algorithms to a reasonable subset, disable any password based authentication,
+and only allow root to login.
 
-### Enhanced Bootloader Configuration
+You can provide keys that will be written to root's `.ssh/authorized_keys` file. This will allow
+you to directly continue your setup with your favourite infrastructure management software.
 
-The installer provides intelligent bootloader configuration following Gentoo Handbook best practices:
+### (Optional) Additional packages
 
-  * **Bootloader Options**: Choose between **GRUB**, **systemd-boot**, or minimalist **EFI Stub** booting.
-  * **Platform Detection**: Automatically detects UEFI vs. BIOS systems and applies the correct installation method.
-  * **Secure Boot Awareness**: Detects if Secure Boot is enabled and provides guidance and optional `shim` installation for compatibility.
-  * **Advanced GRUB Configuration**: Easily configure custom kernel parameters, dual-boot detection with `os-prober`, and performance-tuning boot flags.
-  * **RAID Boot Order Optimization**: Intelligent UEFI boot order management for RAID 1 setups.
+You can add any amount of additional packages to be installed on the target system.
+These will simply be passed to a final `emerge` call before the script is done,
+where autounmasking will also be done automatically. It is recommended to keep
+this to a minimum, because of the quite "interactive" nature of gentoo package management ;)
 
-### Performance Optimization System
+## Updating the kernel
 
-The installer includes a comprehensive performance optimization system:
+By default, the installed system uses gentoo's binary kernel distribution (`sys-kernel/gentoo-kernel-bin`)
+together with an initramfs generated by dracut. This ensures that the installed system works on all common hardware configurations.
+Alternatively, you can set `KERNEL_TYPE=source` to build the kernel from source using `sys-kernel/gentoo-kernel`
+(same distribution config, compiled locally).
+Feel free to replace this with a custom-built kernel (and possibly remove/adjust the initramfs) when the system is booted.
 
-  * **CPU-Specific Tuning**: Automatically detects your CPU and applies optimal compilation flags.
-  * **Performance Tools**: Installs `cpuid2cpuflags` and `resolve-march-native` for hardware-specific optimization.
-  * **Optimized Compilation**: Sets `CFLAGS`, `CXXFLAGS`, and `CPU_FLAGS_X86` for maximum performance.
-  * **Kernel Parameters**: Adds performance-tuning boot parameters like `intel_pstate=performance`.
-  * **Clear User Guidance**: Detailed help text explains exactly what optimization does and its benefits.
-  * **Recommended by Default**: Enabled by default for the best Gentoo experience.
+The installer will provide the convenience script `generate_initramfs.sh` in `/boot/efi/`
+or `/boot/bios` which may be used to generate a new initramfs for the given kernel version.
+Depending on whether your system uses EFI or BIOS boot, you will also find your kernel and initramfs in different locations:
 
-> 🚀 **Performance Tip**: The Performance Optimization option is highly recommended as it follows core Gentoo best practices. It automatically detects your CPU and applies the optimal compilation flags, ensuring software is tailored for maximum performance on your specific hardware.
-
-### Desktop Environment Integration
-
-#### **KDE Plasma Enhanced Integration**
-When installing KDE Plasma, the installer provides enhanced integration features:
-
-  * **Optimal USE Flags**: Automatically configures critical USE flags for NetworkManager, SDDM, and KWallet.
-  * **KWallet Auto-Unlocking**: Configures PAM for automatic KWallet unlocking via SDDM login.
-  * **User Authentication**: Sets up Polkit rules to allow users in the `wheel` group to authenticate for system operations.
-  * **Portage Profile Management**: Automatically sets `desktop/plasma/systemd` or `desktop/plasma` profile.
-
-#### **Hyprland Complete Ecosystem**
-For Hyprland installations, the installer provides comprehensive support:
-
-  * **GURU Overlay Management**: Automatically enables and syncs the GURU overlay for required packages.
-  * **Dependency Detection**: Automatically detects required packages based on your `hyprland.conf` content.
-  * **Complete Toolchain**: Installs waybar, wofi, kitty, swww, grim, slurp, and other essential tools.
-  * **Configuration Deployment**: Automatically deploys your custom configuration to the new user's home directory.
-  * **Portage Profile**: Sets appropriate desktop profile for optimal Wayland support.
-
-#### **Other Desktop Environments**
-All desktop environments benefit from:
-
-  * **Automatic Profile Selection**: Correct Portage profiles are set based on DE and init system choice.
-  * **Essential Package Installation**: Critical packages like `x11-drivers/xf86-input-libinput` are always installed.
-  * **Optimized Configurations**: USE flags and system settings are optimized for each DE.
-
-### **Portage Overlay Management**
-
-The installer provides modern, flexible overlay management:
-
-  * **Universal Access**: Add any overlay regardless of desktop environment choice.
-  * **Modern Tools**: Uses `eselect repository` instead of outdated `layman`.
-  * **Simple Configuration**: Only overlay names required (e.g., `guru`, `steam-overlay`, `java-overlay`).
-  * **Automatic Setup**: Overlays are automatically enabled and synced during installation.
-  * **Hyprland Integration**: GURU overlay is automatically added for Hyprland installations.
-  * **Flexible Usage**: Perfect for gaming (steam-overlay), development (java-overlay), or any community packages.
-
-> 💡 **Pro Tip**: You can now add overlays like `steam-overlay` for gaming packages or `java-overlay` for Java development, regardless of which desktop environment you choose. The system is much more flexible than before!
-
-## Updating the Kernel
-
-By default, the system uses `sys-kernel/gentoo-kernel-bin`. To update your kernel:
-
-1.  Emerge the new kernel package.
-2.  Run `eselect kernel set <new-kernel-version>`.
-3.  Backup your old kernel and initramfs (e.g., `mv /boot/efi/vmlinuz.efi /boot/efi/vmlinuz.efi.bak`).
-4.  Generate a new initramfs using the provided convenience script: `/boot/efi/generate_initramfs.sh <new-kernel-version> /boot/efi/initramfs.img`.
-5.  Copy the new kernel to the correct location (e.g., `cp /boot/vmlinuz-<version> /boot/efi/vmlinuz.efi`).
-
-> 🔧 **Note**: The convenience script now contains hardcoded module lists, ensuring it works correctly regardless of your current shell environment.
-
-## 🛠️ Troubleshooting and Power User Recovery
-
-The Gentoo Easy Install is designed with power users in mind. When things go wrong, you have full control to fix them.
-
-### 🚨 Common Issues and Solutions
-
-  * **Installation Fails**: The script will prompt you to drop into an emergency shell to fix issues. Most commands can be retried without restarting the entire process.
-  * **`blkid` Errors After Partitioning**: Ensure all devices are unmounted before starting. Use `wipefs -a <device>` to clear old filesystem signatures if problems persist.
-  * **Chrooting After a Failed Install**: If you need to fix the installed system, mount your root partition under `/mnt` and run `./install --chroot /mnt`.
-  * **Unbound Variable Errors**: All configuration arrays are now proactively initialized, preventing these errors completely.
-
-### 🔧 Power User Recovery Methods
-
-**Emergency Shell Access:**
 ```bash
-# During installation, you can always drop into a shell
-# The installer will prompt you with options:
-# 1. Retry the failed command
-# 2. Drop into emergency shell
-# 3. Abort and clean up
+# EFI
+kernel="/boot/efi/vmlinuz.efi"
+initrd="/boot/efi/initramfs.img"
+# BIOS
+kernel="/boot/bios/vmlinuz-current"
+initrd="/boot/bios/initramfs.img"
 ```
 
-**Manual System Recovery:**
-```bash
-# If the installer fails, you can manually access your system
-mount /dev/sdaX /mnt  # Mount your root partition
-chroot /mnt            # Enter the installed system
-# Fix any issues manually, then continue installation
+In both cases, the update procedure is as follows:
+
+1. Emerge new kernel
+2. `eselect kernel set <kver>`
+3. Backup old kernel and initramfs (`mv "$kernel"{,.bak}`, `mv "$initrd"{,.bak}`)
+4. Generate new initramfs for this kernel `generate_initramfs.sh <kver> "$initrd"`
+5. Copy new kernel `cp /boot/kernel-<kver> "$kernel"` (for systemd) or `cp /boot/vmlinuz-<kver> "$kernel"` (for openrc)
+
+## Recommendations
+
+This project started out as a way of documenting a best-practices installation for myself.
+As the project grew larger, I've added more configuration options to suit legacy needs.
+Below I've outlined several decisions I've made for this project, or decisions you
+have during configuration. If you intend on setting up a modern system, you might want
+to check them out. Please keep in mind that those are all based on my personal opinions and
+experience. Your mileage may vary.
+
+#### EFI vs BIOS
+
+Use EFI. BIOS is old and deprecated for a long time now.
+Only certain VPS hosters may require you to use BIOS still (time to write to them about that!)
+
+#### EFIstub booting
+
+Don't install a bootloader when this script is done, except you absolutely need one.
+The kernel can directly be booted by EFI without need for a bootloader.
+By default, this script will use efibootmgr to add a bootentry directly to your "mainboard's bootselect" (typically F12).
+Nowadays, there's just no reason to use GRUB, syslinux, or similar bootloaders by default.
+They only add additional time to your boot, and even dualbooting Windows works just fine without one.
+Only if you require frequent editing of kernel parameters, or want kernel autodiscovery from attached media
+you might want to consider using one of these. For the average (advanced) user this isn't necessary.
+
+If you want to add more boot options or want to learn about efibootmgr, refer to [this page on the gentoo wiki](https://wiki.gentoo.org/wiki/Efibootmgr).
+
+#### Modern file systems
+
+I recommend using a modern file system like ZFS, both on desktops and servers.
+It provides transparent block-level compression, instant snapshots and full-disk encryption.
+Generally, encrypting your root fs doesn't cost you anything and protects your data in case you lose your device.
+
+#### Systemd vs OpenRC
+
+I will not entertain the religious eternal debate here. Both are fine init systems, and
+I've been using both *a lot*. If you cannot decide, here are some objective facts:
+
+- OpenRC is a service manager. Setting up all the other services is a lot of work, but you will learn a lot.
+- Systemd is an OS-level software suite. It brings an insane amount of features with a steep learning curve.
+
+Here's a non-exhaustive list of things you will ~do manually~ learn when using OpenRC,
+that are already provided for in systemd: udev, dhcp, acpi events (power/sleep button),
+cron jobs, reliable syslog, logrotate, process sandboxing, persistent backlight setting, persistent audio mute-status, user-owned login sessions, ...
+
+Make of this what you will, both have their own quirks. Choose your poison.
+
+#### Miscellaneous
+
+- Use the newer iwd for WiFi instead of wpa_supplicant
+- (If systemd) Use timers instead of cron jobs
+
+## Troubleshooting and FAQ
+
+After the initial sanity check, the script should be able to finish unattendedly.
+But given the unpredictability of future gentoo versions, you might still run into issues
+once in a while.
+
+The script checks every command for success, so if anything fails during installation,
+you will be given a proper message of what went wrong. Inside the chroot,
+most commands will be executed in a checked loop, and allow you to interactively
+fix problems with a shell, to retry, or to skip the command. You can report
+issues specific to this script on the issue tracker. To seek help
+regarding gentoo in general, visit the official [IRC](https://www.gentoo.org/get-involved/irc-channels/)
+or [Discord](https://discord.com/invite/gentoolinux).
+
+If you experience any issues after rebooting and need to fix something inside the chroot,
+you can use the installer to chroot into an existing system. Run `./install --help` for more infos.
+
+#### Q: ZFS cannot be installed in the chroot due to an unsupported kernel version
+
+**A:** The newest stable ZFS module may require a kernel version that is newer than what is provided on gentoo stable.
+If you encounter this problem, you might be able to fix the problem by switching to testing by dropping to a shell temporarily:
+
+```
+# Press S<Enter> when asked about what to do next.
+# This opens an emergency shell in the chroot.
+echo 'ACCEPT_KEYWORDS="~amd64"' >> /etc/portage/make.conf # Enable testing for your architecture.
+emerge -v gentoo-kernel-bin                               # Update kernel to newest version (or gentoo-kernel if KERNEL_TYPE=source)
+exit # Ctrl-D
+# Now select 'retry' when asked about what to do next.
 ```
 
-**Cleanup and Restart:**
-```bash
-# The installer can clean up after interruptions
-./install cleanup      # Clean up any partial installation
-./install             # Start fresh
-```
+#### Q: I get errors after partitioning about blkid not being able to find a UUID
 
-### 💪 Why Power Users Love This Installer
+**A:** Be sure that all devices are unmounted and not in use before starting the script.
+Use `wipefs -a <DEVICE>` on your partitions or fully wipe the disk before use.
+The new partitions probably align with previously existing partitions that had
+filesystems on them. Some filesystems signatures like those of ZFS can coexist with
+other signatures and may cause blkid to find ambiguous information.
 
-> *"Unlike other installers that lock you out when things go wrong, this one gives you full access to fix issues yourself. It's like having a helpful assistant that steps aside when you need to take control."*
+## References
 
-- **Never Locked Out**: Emergency shell access at any point
-- **Full System Control**: Mount, modify, and fix anything manually
-- **Intelligent Recovery**: Multiple recovery paths for any situation
-- **Respects Your Expertise**: Automates the boring parts, not the important decisions
-- **Bulletproof Reliability**: Comprehensive error prevention and handling
-
-## 🏗️ Technical Architecture
-
-### **Robust Error Handling**
-- **Proactive Variable Initialization**: All configuration arrays are initialized at script start
-- **Comprehensive Error Recovery**: try blocks, cleanup traps, and emergency shells
-- **Graceful Degradation**: Script continues working even with incomplete configurations
-
-### **Security Features**
-- **No Plaintext Passwords**: Interactive or random password generation only
-- **Secure File Permissions**: Proper ownership and permissions for all created files
-- **SSH Hardening**: Configurable SSH security settings
-
-### **Performance Optimizations**
-- **Intelligent Package Selection**: Only installs what's needed
-- **Optimized USE Flags**: Critical flags set for each desktop environment
-- **Efficient Disk Operations**: Smart partitioning and filesystem handling
-- **CPU-Specific Optimization**: Automatic detection and application of optimal compilation flags
-- **Performance Tools Integration**: Installs cpuid2cpuflags and resolve-march-native for hardware-specific tuning
-- **Kernel Performance Parameters**: Automatic addition of performance-tuning boot parameters
-- **Clear User Guidance**: Detailed help text explains exactly what optimization does and its benefits
-
-## Attribution
-
-This project is a fork of [oddlama/gentoo-install](https://github.com/oddlama/gentoo-install) with additional enhancements:
-
-  * **Performance Optimization**: Advanced display backend testing and GPU optimization.
-  * **Extended Documentation**: Detailed guides for various use cases.
-  * **Additional Scripts**: Device management, storage management, and more.
-  * **Enhanced Reliability**: Comprehensive error prevention and handling.
-  * **Desktop Environment Support**: Complete ecosystem management for all major DEs.
-  * **Advanced Bootloader Configuration**: Intelligent platform detection and optimization.
-  * **Modern Overlay Management**: Universal overlay support using current Gentoo best practices.
-  * **Performance Optimization**: Comprehensive CPU-specific tuning and performance tools integration.
-  * **Bulletproof Configuration**: Proactive variable initialization and comprehensive error prevention.
-
-Original project by [oddlama](https://github.com/oddlama) - thank you for the excellent foundation!
+* [Gentoo AMD64 Handbook](https://wiki.gentoo.org/wiki/Handbook:AMD64)
+* [Sakaki's EFI Install Guide](https://wiki.gentoo.org/wiki/Sakaki%27s_EFI_Install_Guide)
