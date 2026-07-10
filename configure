@@ -25,12 +25,8 @@ export GENTOO_INSTALL_REPO_SCRIPT_ACTIVE=true
 # shellcheck source=./scripts/utils.sh
 source "$GENTOO_INSTALL_REPO_DIR/scripts/utils.sh"
 
-# Remember actual config file path
-CONFIG_FILE="$(realpath "${1-"gentoo.conf"}" 2>/dev/null)"
-RELA_CONFIG_FILE="$(realpath --relative-to="$(pwd)" "$CONFIG_FILE" 2>/dev/null)"
-CUSTOM_CONFIG_FILE="$GENTOO_INSTALL_REPO_DIR/custom/gentoo.custom.conf"
-
-# Check if help is requested
+# Parse the one optional output/config path before loading UI dependencies.
+CONFIG_ARGUMENT=""
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		""|"help"|"--help"|"-help"|"-h")
@@ -40,15 +36,40 @@ while [[ $# -gt 0 ]]; do
 			echo "the configuration is loaded into the configurator."
 			exit 0
 			;;
+		-*) die "Invalid option '$1'" ;;
+		*)
+			[[ -z $CONFIG_ARGUMENT ]] \
+				|| die "Only one configuration path may be specified"
+			CONFIG_ARGUMENT="$1"
+			;;
 	esac
 	shift
 done
 
-check_wanted_programs dialog ncurses=ncursesw6-config
+# Remember actual config file path.
+CONFIG_FILE="$(realpath --canonicalize-missing -- "${CONFIG_ARGUMENT:-gentoo.conf}" 2>/dev/null)" \
+	|| die "Could not resolve configuration path '${CONFIG_ARGUMENT:-gentoo.conf}'"
+RELA_CONFIG_FILE="$(realpath --relative-to="$(pwd)" "$CONFIG_FILE" 2>/dev/null)" \
+	|| die "Could not express configuration path relative to the working directory"
+
+check_wanted_programs \
+	awk \
+	base64 \
+	basename \
+	dialog \
+	grep \
+	lsblk \
+	ncurses=ncursesw6-config \
+	realpath \
+	sort \
+	tr \
+	uuidgen \
+	wc
 
 # Determine whether EFI is available
 HAS_EFI_SUPPORT=$([[ -d /sys/firmware/efi ]] && echo -n "true" || echo -n "false")
 DEFAULT_BOOT_TYPE=$([[ $HAS_EFI_SUPPORT == true ]] && echo -n "efi" || echo -n "bios")
+DEFAULT_BOOTLOADER=$([[ $HAS_EFI_SUPPORT == true ]] && echo -n "grub" || echo -n "limine")
 EFI_UNSUPPORTED_MESSAGE_SHORT="Missing EFI support on this system!"
 EFI_UNSUPPORTED_MESSAGE="Apparently, your system does NOT support efi. Double-check before proceeding!"
 
@@ -223,6 +244,11 @@ PORTAGE_SYNC_TYPES=("git" "rsync")
 KERNEL_TYPES=(
 	"bin"    "bin    | Pre-built binary kernel (gentoo-kernel-bin)"
 	"source" "source | Build kernel from source (gentoo-kernel)"
+)
+BOOTLOADER_TYPES=(
+	"grub"         "grub         | GRUB, supported here for EFI installs"
+	"limine"       "limine       | Limine, supported here for EFI and BIOS installs"
+	"systemd-boot" "systemd-boot | systemd-boot, EFI only"
 )
 
 function create_single_disk_layout() {
@@ -418,6 +444,9 @@ function load_default_config() {
 	SYSTEMD_NETWORKD_ADDRESSES=("192.168.1.100/32" "fd00::1/64")
 	SYSTEMD_NETWORKD_GATEWAY="192.168.1.1"
 	SYSTEMD_INITRAMFS_SSHD=false
+	LUKS_HEADER_EXPORT_DIR=""
+	REQUIRE_LUKS_HEADER_EXPORT=false
+	MAX_STAGE3_AGE_DAYS=45
 
 	function disk_configuration() {
 		#create_zfs_centric_layout swap=8GiB type="$DEFAULT_BOOT_TYPE" encrypt=true compress=zstd pool_type=standard /dev/sdX
@@ -441,6 +470,7 @@ function load_default_config() {
 	ENABLE_SSHD=true
 	ENABLE_BINPKG=false
 	KERNEL_TYPE=bin
+	BOOTLOADER="$DEFAULT_BOOTLOADER"
 	ROOT_SSH_AUTHORIZED_KEYS=""
 
 	# All settings are unsaved.
@@ -859,6 +889,7 @@ init_menu_size
 MENU_ITEMS=(
 	"PARTITIONING_SCHEME"
 	"PARTITIONING_BOOT_TYPE"
+	"BOOTLOADER"
 	"PARTITIONING_BOOT_DEVICE"
 	"PARTITIONING_USE_SWAP"
 	"PARTITIONING_SWAP"
@@ -901,7 +932,6 @@ MENU_ITEMS=(
 	"ENABLE_SSHD"
 	"ENABLE_BINPKG"
 	"KERNEL_TYPE"
-	"CUSTOM_INTEGRATIONS"
 	"ROOT_SSH_AUTHORIZED_KEYS"
 	"ADDITIONAL_PACKAGES"
 )
@@ -952,6 +982,33 @@ function PARTITIONING_BOOT_TYPE_menu()  {
 		"${PARTITIONING_BOOT_TYPES[@]}"
 	then
 		PARTITIONING_BOOT_TYPE="$dialog_out"
+		UNSAVED_CHANGES=true
+	else
+		# Return to menu
+		true
+	fi
+}
+
+function BOOTLOADER_tag()   { echo "Bootloader"; }
+function BOOTLOADER_label() {
+	local warning=""
+	if [[ $PARTITIONING_BOOT_TYPE == bios && $BOOTLOADER == systemd-boot ]]; then
+		warning=" \Z1requires EFI\Zn"
+	elif [[ $PARTITIONING_BOOT_TYPE == bios && $BOOTLOADER == grub ]]; then
+		warning=" \Z1EFI-only here\Zn"
+	fi
+	echo "($BOOTLOADER)$warning"
+}
+function BOOTLOADER_show()  { return 0; }
+function BOOTLOADER_help()  { echo "Select the bootloader to install. GRUB is supported by this installer for EFI installs. Limine is supported for EFI and BIOS installs. systemd-boot requires EFI."; }
+function BOOTLOADER_menu()  {
+	if menu_radiolist_labeled \
+		"Select bootloader" \
+		"Select the bootloader to install. Some combinations are intentionally rejected later: systemd-boot requires EFI, and this installer does not currently install GRUB for BIOS layouts." \
+		"$BOOTLOADER" \
+		"${BOOTLOADER_TYPES[@]}"
+	then
+		BOOTLOADER="$dialog_out"
 		UNSAVED_CHANGES=true
 	else
 		# Return to menu
@@ -1579,52 +1636,6 @@ function KERNEL_TYPE_menu()  {
 	fi
 }
 
-function CUSTOM_INTEGRATIONS_tag()   { echo "Custom integrations"; }
-function CUSTOM_INTEGRATIONS_label() {
-	local hypr="${HYPR_POSTINSTALL_ENABLE:-false}"
-	local tkg="${CUSTOM_KERNEL_PIPELINE_ENABLE:-false}"
-	echo "(hypr:$hypr, tkg:$tkg)"
-}
-function CUSTOM_INTEGRATIONS_show()  { return 0; }
-function CUSTOM_INTEGRATIONS_help()  {
-	echo "Opens custom/gentoo.custom.conf for advanced options and hooks (Hyprland and linux-tkg)."
-}
-function CUSTOM_INTEGRATIONS_menu()  {
-	mkdir -p "$(dirname "$CUSTOM_CONFIG_FILE")" \
-		|| die "Could not create custom config directory"
-
-	if [[ ! -f "$CUSTOM_CONFIG_FILE" ]]; then
-		cat > "$CUSTOM_CONFIG_FILE" <<'EOF'
-# Custom integration hooks and advanced options.
-# This file is sourced by gentoo.conf and survives ./configure rewrites.
-
-HYPR_POSTINSTALL_ENABLE=true
-HYPR_POSTINSTALL_RUN_BOOTSTRAP=true
-HYPR_POSTINSTALL_WITH_HYPROVERLAY=false
-HYPR_POSTINSTALL_GPU_PROFILE="auto"
-HYPR_POSTINSTALL_MACHINE_PROFILE="auto"
-HYPR_POSTINSTALL_TARGET_USER=""
-
-CUSTOM_KERNEL_PIPELINE_ENABLE=false
-CUSTOM_KERNEL_SCRIPT_RELATIVE_PATH=""
-CUSTOM_KERNEL_SCRIPT_ARGS=()
-EOF
-	fi
-
-	dialog \
-		--title "Custom integrations (Hyprland/linux-tkg)" \
-		--editbox "$CUSTOM_CONFIG_FILE" "${EDITTEXT_SIZE[@]}"
-
-	if [[ $? -eq 0 ]]; then
-		echo "$dialog_out" > "$CUSTOM_CONFIG_FILE" \
-			|| die "Could not write custom config"
-		# Reload variables in current configurator session so labels/help reflect latest values.
-		# shellcheck disable=SC1090
-		source "$CUSTOM_CONFIG_FILE" || die "Could not source custom config"
-		UNSAVED_CHANGES=true
-	fi
-}
-
 function ROOT_SSH_AUTHORIZED_KEYS_tag()   { echo "Authorized keys (root)"; }
 function ROOT_SSH_AUTHORIZED_KEYS_label() { echo "$(sed '/^\s*#/d;/^\s*$/d' <<< "$ROOT_SSH_AUTHORIZED_KEYS" | wc -l) keys"; }
 function ROOT_SSH_AUTHORIZED_KEYS_show()  { return 0; }
@@ -1702,9 +1713,12 @@ LOCALE=${LOCALE@Q}
 SYSTEMD_NETWORKD=${SYSTEMD_NETWORKD@Q}
 SYSTEMD_NETWORKD_INTERFACE_NAME=${SYSTEMD_NETWORKD_INTERFACE_NAME@Q}
 SYSTEMD_NETWORKD_DHCP=${SYSTEMD_NETWORKD_DHCP@Q}
-SYSTEMD_NETWORKD_ADDRESSES=${SYSTEMD_NETWORKD_ADDRESSES@Q}
+SYSTEMD_NETWORKD_ADDRESSES=(${SYSTEMD_NETWORKD_ADDRESSES[@]@Q})
 SYSTEMD_NETWORKD_GATEWAY=${SYSTEMD_NETWORKD_GATEWAY@Q}
 SYSTEMD_INITRAMFS_SSHD=${SYSTEMD_INITRAMFS_SSHD@Q}
+
+LUKS_HEADER_EXPORT_DIR=${LUKS_HEADER_EXPORT_DIR@Q}
+REQUIRE_LUKS_HEADER_EXPORT=${REQUIRE_LUKS_HEADER_EXPORT@Q}
 
 
 ################################################
@@ -1716,6 +1730,7 @@ PORTAGE_GIT_MIRROR=${PORTAGE_GIT_MIRROR@Q}
 GENTOO_MIRROR=${GENTOO_MIRROR@Q}
 GENTOO_ARCH=${GENTOO_ARCH@Q}
 GENTOO_SUBARCH=${GENTOO_SUBARCH@Q}
+MAX_STAGE3_AGE_DAYS=${MAX_STAGE3_AGE_DAYS@Q}
 STAGE3_VARIANT=${STAGE3_VARIANT@Q}
 STAGE3_BASENAME="stage3-\$GENTOO_ARCH-\$STAGE3_VARIANT"
 STAGE3_BASENAME_CUSTOM=\$([[ \$STAGE3_VARIANT == *x32* ]] && echo "stage3-$STAGE3_VARIANT" || echo "stage3-$GENTOO_SUBARCH-$STAGE3_VARIANT")
@@ -1733,15 +1748,8 @@ ADDITIONAL_PACKAGES=(${ADDITIONAL_PACKAGES[@]@Q})
 ENABLE_SSHD=${ENABLE_SSHD@Q}
 ENABLE_BINPKG=${ENABLE_BINPKG@Q}
 KERNEL_TYPE=${KERNEL_TYPE@Q}
+BOOTLOADER=${BOOTLOADER@Q}
 ROOT_SSH_AUTHORIZED_KEYS=${ROOT_SSH_AUTHORIZED_KEYS@Q}
-
-# Load optional custom overrides/hooks from a separate file.
-# This keeps advanced customizations intact when this config is regenerated by ./configure.
-if [[ -f "\$GENTOO_INSTALL_REPO_DIR/custom/gentoo.custom.conf" ]]; then
-	# shellcheck disable=SC1091
-	source "\$GENTOO_INSTALL_REPO_DIR/custom/gentoo.custom.conf"
-fi
-
 
 ################################################
 # Prove that you have read the config

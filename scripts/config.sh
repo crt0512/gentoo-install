@@ -5,8 +5,9 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
 ################################################
 # Script internal configuration
 
-# The temporary directory for this script,
-# must reside in /tmp to allow the chrooted system to access the files
+# The temporary directory for this script. It must reside in /tmp to allow the
+# chrooted system to access the files. The entrypoint validates this as a
+# root-owned, non-symlink directory with mode 0700 before using it.
 TMP_DIR="/tmp/gentoo-install"
 # Mountpoint for the new system
 ROOT_MOUNTPOINT="$TMP_DIR/root"
@@ -16,6 +17,17 @@ GENTOO_INSTALL_REPO_BIND="$TMP_DIR/bind"
 UUID_STORAGE_DIR="$TMP_DIR/uuids"
 # Backup dir for luks headers
 LUKS_HEADER_BACKUP_DIR="$TMP_DIR/luks-headers"
+# Permanent copy inside the installed system. This is useful for inspection,
+# but is not an independent recovery copy: it is stored behind the same LUKS
+# container whose header it backs up.
+LUKS_HEADER_TARGET_DIR="/root/luks-header-backups"
+# Optional directory on the live host (for example, a mounted removable disk).
+# Configuration files may override these two values.
+LUKS_HEADER_EXPORT_DIR=""
+REQUIRE_LUKS_HEADER_EXPORT=false
+# Reject replayed stage3 builds older than this many days. Set to 0 only for an
+# explicit offline/archive workflow; signatures and checksums are still checked.
+MAX_STAGE3_AGE_DAYS=45
 
 # Flag to track usage of raid (needed to check for mdadm existence)
 USED_RAID=false
@@ -32,6 +44,32 @@ NO_PARTITIONING_OR_FORMATTING=false
 
 # An array of disk related actions to perform
 DISK_ACTIONS=()
+# Resource names declared by DISK_ACTIONS. Before destructive work begins the
+# installer records whether any of these already exist, so failure cleanup can
+# only tear down resources created by this run.
+INSTALLER_PLANNED_MD_ARRAYS=()
+INSTALLER_PLANNED_LUKS_MAPPINGS=()
+INSTALLER_CREATED_MD_ARRAYS=()
+INSTALLER_CREATED_LUKS_MAPPINGS=()
+INSTALLER_CREATED_LUKS_HEADERS=()
+declare -gA INSTALLER_PLANNED_MD_ARRAY_SET=()
+declare -gA INSTALLER_PLANNED_LUKS_MAPPING_SET=()
+declare -gA INSTALLER_MD_ARRAY_PREEXISTED=()
+declare -gA INSTALLER_LUKS_MAPPING_PREEXISTED=()
+INSTALLER_RPOOL_PREEXISTED=false
+INSTALLER_CREATED_RPOOL=false
+INSTALLER_RESOURCE_BASELINES_CAPTURED=false
+
+# Mounts created by this process are recorded individually. This is also used
+# by --chroot so pre-existing mounts supplied by the operator are never removed.
+INSTALLER_CREATED_MOUNTS=()
+declare -gA INSTALLER_CREATED_MOUNT_SET=()
+INSTALLER_OWNS_TARGET_MOUNTS=false
+INSTALLER_FAILURE_CLEANUP_RUNNING=false
+# Canonical whole-device paths which will be modified. This is consumed by the
+# destructive confirmation shown immediately before applying disk actions.
+DESTRUCTIVE_DEVICES=()
+declare -gA DESTRUCTIVE_DEVICE_SET=()
 # An array of dracut parameters needed to boot the selected configuration
 DISK_DRACUT_CMDLINE=()
 # An associative array from disk id to a resolvable string
@@ -40,8 +78,32 @@ declare -gA DISK_ID_TO_RESOLVABLE
 declare -gA DISK_ID_PART_TO_GPT_ID
 # An associative array to check for existing ids (maps to uuids)
 declare -gA DISK_ID_TO_UUID
+# IDs registered as pre-existing are read-only inputs. Allowing a later format,
+# RAID, LUKS, or partition action on them could modify a device which was never
+# included in DESTRUCTIVE_DEVICES or the exact wipe confirmation.
+declare -gA DISK_ID_REGISTERED_EXISTING=()
 # An associative set to check for correct usage of size=remaining in gpt tables
 declare -gA DISK_GPT_HAD_SIZE_REMAINING
+
+function register_destructive_device() {
+	# See validate_destructive_whole_block_devices: the inner installer only
+	# rebuilds configuration state and must never register/apply host disk work.
+	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] || return 0
+
+	local device="$1"
+	local canonical
+
+	canonical="$(canonicalize_whole_block_device "$device")" \
+		|| die "Invalid destructive whole-device path '$device'"
+	if block_device_is_in_use "$canonical"; then
+		die "Refusing to modify '$device' ('$canonical'): the device or one of its children is mounted or otherwise in use"
+	fi
+
+	if [[ ! -v "DESTRUCTIVE_DEVICE_SET[$canonical]" ]]; then
+		DESTRUCTIVE_DEVICE_SET[$canonical]=true
+		DESTRUCTIVE_DEVICES+=("$canonical")
+	fi
+}
 
 function only_one_of() {
 	local previous=""
@@ -63,7 +125,13 @@ function create_new_id() {
 		&& die_trace 2 "Identifier contains invalid character ';'"
 	[[ ! -v DISK_ID_TO_UUID[$id] ]] \
 		|| die_trace 2 "Identifier '$id' already exists"
-	DISK_ID_TO_UUID[$id]="$(load_or_generate_uuid "$(base64 -w 0 <<< "$id")")"
+	local storage_key
+	storage_key="$(base64 -w 0 <<< "$id")" \
+		|| die_trace 2 "Could not encode identifier '$id' for UUID storage"
+	local generated_uuid
+	generated_uuid="$(load_or_generate_uuid "$storage_key")" \
+		|| die_trace 2 "Could not load or generate UUID for identifier '$id'"
+	DISK_ID_TO_UUID[$id]="$generated_uuid"
 }
 
 function verify_existing_id() {
@@ -75,6 +143,8 @@ function verify_existing_id() {
 function verify_existing_unique_ids() {
 	local arg="$1"
 	local ids="${arguments[$arg]}"
+	local count_orig
+	local count_uniq
 
 	count_orig="$(tr ';' '\n' <<< "$ids" | grep -c '\S')"
 	count_uniq="$(tr ';' '\n' <<< "$ids" | grep '\S' | sort -u | wc -l)"
@@ -89,6 +159,19 @@ function verify_existing_unique_ids() {
 	for id in ${ids//';'/ }; do
 		[[ -v DISK_ID_TO_UUID[$id] ]] \
 			|| die_trace 2 "$arg=... contains unknown identifier '$id'"
+	done
+}
+
+function reject_registered_existing_ids_for_destructive_action() {
+	local action="$1"
+	local ids="$2"
+	local id
+
+	# Splitting is intentional here.
+	# shellcheck disable=SC2086
+	for id in ${ids//';'/ }; do
+		[[ ! -v "DISK_ID_REGISTERED_EXISTING[$id]" ]] \
+			|| die_trace 2 "Refusing to $action registered-existing id '$id': it is not part of the confirmed destructive-device set"
 	done
 }
 
@@ -117,6 +200,7 @@ function register_existing() {
 	create_new_id new_id
 	local new_id="${arguments[new_id]}"
 	local device="${arguments[device]}"
+	DISK_ID_REGISTERED_EXISTING[$new_id]=true
 	create_resolve_entry_device "$new_id" "$device"
 	DISK_ACTIONS+=("action=existing" "$@" ";")
 }
@@ -130,9 +214,11 @@ function create_gpt() {
 	declare -A arguments; parse_arguments "$@"
 
 	only_one_of device id
+	[[ -v arguments[device] ]] \
+		&& register_destructive_device "${arguments[device]}"
 	create_new_id new_id
 	[[ -v arguments[id] ]] \
-		&& verify_existing_id id
+		&& { verify_existing_id id; reject_registered_existing_ids_for_destructive_action "create a GPT on" "${arguments[id]}"; }
 
 	local new_id="${arguments[new_id]}"
 	create_resolve_entry "$new_id" ptuuid "${DISK_ID_TO_UUID[$new_id]}"
@@ -151,6 +237,7 @@ function create_partition() {
 
 	create_new_id new_id
 	verify_existing_id id
+	reject_registered_existing_ids_for_destructive_action "create a partition on" "${arguments[id]}"
 	verify_option type bios efi swap raid luks linux
 
 	[[ -v "DISK_GPT_HAD_SIZE_REMAINING[${arguments[id]}]" ]] \
@@ -178,12 +265,28 @@ function create_raid() {
 	local extra_arguments=()
 	declare -A arguments; parse_arguments "$@"
 
-	create_new_id new_id
 	verify_option level 0 1 5 6
 	verify_existing_unique_ids ids
+	reject_registered_existing_ids_for_destructive_action "create RAID from" "${arguments[ids]}"
+	local member_count
+	local minimum_members
+	member_count="$(tr ';' '\n' <<< "${arguments[ids]}" | grep -c '\S')"
+	case "${arguments[level]}" in
+		0|1) minimum_members=2 ;;
+		5)   minimum_members=3 ;;
+		6)   minimum_members=4 ;;
+	esac
+	[[ "$member_count" -ge "$minimum_members" ]] \
+		|| die_trace 1 "RAID level ${arguments[level]} requires at least $minimum_members distinct members"
+	create_new_id new_id
 
 	local new_id="${arguments[new_id]}"
 	local uuid="${DISK_ID_TO_UUID[$new_id]}"
+	local mddevice="/dev/md/${arguments[name]}"
+	[[ ! -v "INSTALLER_PLANNED_MD_ARRAY_SET[$mddevice]" ]] \
+		|| die_trace 1 "RAID device name '${arguments[name]}' is used more than once"
+	INSTALLER_PLANNED_MD_ARRAY_SET[$mddevice]=true
+	INSTALLER_PLANNED_MD_ARRAYS+=("$mddevice")
 	create_resolve_entry "$new_id" mdadm "$uuid"
 	DISK_DRACUT_CMDLINE+=("rd.md.uuid=$(uuid_to_mduuid "$uuid")")
 	DISK_ACTIONS+=("action=create_raid" "$@" ";")
@@ -191,7 +294,8 @@ function create_raid() {
 
 # Named arguments:
 # new_id:  Id for the new luks
-# id:      The operand device id
+# id:      The operand device id (use this form for a partition)
+# device:  A direct whole-device operand
 function create_luks() {
 	USED_LUKS=true
 	USED_ENCRYPTION=true
@@ -201,13 +305,19 @@ function create_luks() {
 	declare -A arguments; parse_arguments "$@"
 
 	only_one_of device id
+	[[ -v arguments[device] ]] \
+		&& register_destructive_device "${arguments[device]}"
 	create_new_id new_id
 	[[ -v arguments[id] ]] \
-		&& verify_existing_id id
+		&& { verify_existing_id id; reject_registered_existing_ids_for_destructive_action "create LUKS on" "${arguments[id]}"; }
 
 	local new_id="${arguments[new_id]}"
 	local name="${arguments[name]}"
 	local uuid="${DISK_ID_TO_UUID[$new_id]}"
+	[[ ! -v "INSTALLER_PLANNED_LUKS_MAPPING_SET[$name]" ]] \
+		|| die_trace 1 "LUKS mapping name '$name' is used more than once"
+	INSTALLER_PLANNED_LUKS_MAPPING_SET[$name]=true
+	INSTALLER_PLANNED_LUKS_MAPPINGS+=("$name")
 	create_resolve_entry "$new_id" luks "$name"
 	DISK_DRACUT_CMDLINE+=("rd.luks.uuid=$uuid")
 	DISK_ACTIONS+=("action=create_luks" "$@" ";")
@@ -215,12 +325,13 @@ function create_luks() {
 
 # Named arguments:
 # new_id:  Id for the new luks
-# device:  The device
+# device:  The whole device
 function create_dummy() {
 	local known_arguments=('+new_id' '+device')
 	local extra_arguments=()
 	declare -A arguments; parse_arguments "$@"
 
+	register_destructive_device "${arguments[device]}"
 	create_new_id new_id
 
 	local new_id="${arguments[new_id]}"
@@ -240,6 +351,7 @@ function format() {
 	declare -A arguments; parse_arguments "$@"
 
 	verify_existing_id id
+	reject_registered_existing_ids_for_destructive_action "format" "${arguments[id]}"
 	verify_option type bios efi swap ext4 btrfs
 
 	local type="${arguments[type]}"
@@ -262,6 +374,7 @@ function format_zfs() {
 	declare -A arguments; parse_arguments "$@"
 
 	verify_existing_unique_ids ids
+	reject_registered_existing_ids_for_destructive_action "format ZFS on" "${arguments[ids]}"
 
 	USED_ENCRYPTION=${arguments[encrypt]:-false}
 	DISK_ACTIONS+=("action=format_zfs" "$@" ";")
@@ -278,6 +391,7 @@ function format_btrfs() {
 	declare -A arguments; parse_arguments "$@"
 
 	verify_existing_unique_ids ids
+	reject_registered_existing_ids_for_destructive_action "format Btrfs on" "${arguments[ids]}"
 
 	DISK_ACTIONS+=("action=format_btrfs" "$@" ";")
 }
@@ -309,6 +423,7 @@ function create_classic_single_disk_layout() {
 	local type="${arguments[type]:-efi}"
 	local use_luks="${arguments[luks]:-false}"
 	local root_fs="${arguments[root_fs]:-ext4}"
+	validate_destructive_whole_block_devices 1 "classic single-disk layout" "$device"
 
 	create_gpt new_id=gpt device="$device"
 	create_partition new_id="part_$type" id=gpt size=1GiB       type="$type"
@@ -405,7 +520,9 @@ function create_zfs_centric_layout() {
 	local size_swap="${arguments[swap]}"
 	local type="${arguments[type]:-efi}"
 	local encrypt="${arguments[encrypt]:-false}"
+	local compress="${arguments[compress]:-false}"
 	local pool_type="${arguments[pool_type]:-standard}"
+	validate_destructive_whole_block_devices 1 "ZFS-centric layout" "${extra_arguments[@]}"
 
 	# Create layout on first disk
 	create_gpt new_id="gpt_dev0" device="${extra_arguments[0]}"
@@ -427,7 +544,7 @@ function create_zfs_centric_layout() {
 	format id="part_${type}_dev0" type="$type" label="$type"
 	[[ $size_swap != "false" ]] \
 		&& format id="part_swap_dev0" type=swap label=swap
-	format_zfs ids="$root_ids" encrypt="$encrypt" pool_type="$pool_type"
+	format_zfs ids="$root_ids" encrypt="$encrypt" compress="$compress" pool_type="$pool_type"
 
 	if [[ $type == "efi" ]]; then
 		DISK_ID_EFI="part_${type}_dev0"
@@ -454,12 +571,13 @@ function create_raid0_luks_layout() {
 	local extra_arguments=()
 	declare -A arguments; parse_arguments "$@"
 
-	[[ ${#extra_arguments[@]} -gt 0 ]] \
-		|| die_trace 1 "Expected at least one positional argument (the devices)"
+	[[ ${#extra_arguments[@]} -ge 2 ]] \
+		|| die_trace 1 "RAID0 requires at least two positional device arguments"
 	local size_swap="${arguments[swap]}"
 	local type="${arguments[type]:-efi}"
 	local use_luks="${arguments[luks]:-true}"
 	local root_fs="${arguments[root_fs]:-ext4}"
+	validate_destructive_whole_block_devices 2 "RAID0 layout" "${extra_arguments[@]}"
 
 	for i in "${!extra_arguments[@]}"; do
 		create_gpt new_id="gpt_dev${i}" device="${extra_arguments[$i]}"
@@ -518,12 +636,13 @@ function create_raid1_luks_layout() {
 	local extra_arguments=()
 	declare -A arguments; parse_arguments "$@"
 
-	[[ ${#extra_arguments[@]} -gt 0 ]] \
-		|| die_trace 1 "Expected at least one positional argument (the devices)"
+	[[ ${#extra_arguments[@]} -ge 2 ]] \
+		|| die_trace 1 "RAID1 requires at least two positional device arguments"
 	local size_swap="${arguments[swap]}"
 	local type="${arguments[type]:-efi}"
 	local use_luks="${arguments[luks]:-true}"
 	local root_fs="${arguments[root_fs]:-ext4}"
+	validate_destructive_whole_block_devices 2 "RAID1 layout" "${extra_arguments[@]}"
 
 	for i in "${!extra_arguments[@]}"; do
 		create_gpt new_id="gpt_dev${i}" device="${extra_arguments[$i]}"
@@ -588,6 +707,7 @@ function create_btrfs_centric_layout() {
 	local type="${arguments[type]:-efi}"
 	local use_luks="${arguments[luks]:-false}"
 	local raid_type="${arguments[raid_type]:-raid0}"
+	validate_destructive_whole_block_devices 1 "Btrfs-centric layout" "${extra_arguments[@]}"
 
 	# Create layout on first disk
 	create_gpt new_id="gpt_dev0" device="${extra_arguments[0]}"

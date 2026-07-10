@@ -1,4 +1,4 @@
-## About gentoo-install
+## About gentoo-easy-install
 
 This project aspires to be your favourite way to install gentoo.
 It aims to provide a smooth installation experience, both for beginners and experts.
@@ -13,6 +13,7 @@ like [Ansible](https://github.com/ansible/ansible) or [Fora](https://github.com/
 [Overview](#overview) |
 [Updating the Kernel](#updating-the-kernel) |
 [Recommendations](#recommendations) |
+[Security](SECURITY.md) |
 [FAQ](#troubleshooting-and-faq)
 
 ![](contrib/screenshot_configure.png)
@@ -27,14 +28,18 @@ haven't done so already.
 
 ## Usage
 
+> [!WARNING]
+> This installer runs as root, sources its configuration as Bash code, and can erase entire disks.
+> Review the repository and configuration locally, and use a VM before installing on real hardware.
+
 First, boot into a live environment of your choice. I recommend using an [Arch Linux](https://www.archlinux.org/download/) live ISO,
-as the installer will then be able to automatically download required programs or setup ZFS support on the fly.
+as the installer can automatically install most required programs there. ZFS tools and a module matching the live kernel must be installed from trusted packages before using a ZFS layout.
 Afterwards, proceed with the following steps:
 
 ```bash
 pacman -Sy git  # (Archlinux) Install git in live environment, then clone:
-git clone "https://github.com/oddlama/gentoo-install"
-cd gentoo-install
+git clone "https://github.com/firesand/gentoo-easy-install"
+cd gentoo-easy-install
 ./configure     # configure to your liking, save as gentoo.conf
 ./install       # begin installation
 ```
@@ -63,7 +68,7 @@ with some parts depending on the chosen configuration:
 3. Setup portage (initial rsync/git sync, run mirrorselect, create zz-autounmask files)
 4. Base system configuration (hostname, timezone, keymap, locales)
 5. Install required packages (git, kernel, ...)
-6. Make system bootable (generate fstab, build initramfs, create efibootmgr/syslinux boot entry)
+6. Make system bootable (generate fstab, build initramfs, install the selected bootloader)
 7. Ensure minimal working system (automatic wired networking, install eix, set root password)
    - (Optional) Install sshd with secure config (no password logins)
    - (Optional) Install additional packages provided in config
@@ -106,11 +111,11 @@ Feel free to replace this with a custom-built kernel (and possibly remove/adjust
 
 The installer will provide the convenience script `generate_initramfs.sh` in `/boot/efi/`
 or `/boot/bios` which may be used to generate a new initramfs for the given kernel version.
-Depending on whether your system uses EFI or BIOS boot, you will also find your kernel and initramfs in different locations:
+The selected bootloader reads the kernel and initramfs from the boot filesystem:
 
 ```bash
 # EFI
-kernel="/boot/efi/vmlinuz.efi"
+kernel="/boot/efi/vmlinuz-current"
 initrd="/boot/efi/initramfs.img"
 # BIOS
 kernel="/boot/bios/vmlinuz-current"
@@ -139,17 +144,15 @@ experience. Your mileage may vary.
 Use EFI. BIOS is old and deprecated for a long time now.
 Only certain VPS hosters may require you to use BIOS still (time to write to them about that!)
 
-#### EFIstub booting
+#### Bootloader choice
 
-Don't install a bootloader when this script is done, except you absolutely need one.
-The kernel can directly be booted by EFI without need for a bootloader.
-By default, this script will use efibootmgr to add a bootentry directly to your "mainboard's bootselect" (typically F12).
-Nowadays, there's just no reason to use GRUB, syslinux, or similar bootloaders by default.
-They only add additional time to your boot, and even dualbooting Windows works just fine without one.
-Only if you require frequent editing of kernel parameters, or want kernel autodiscovery from attached media
-you might want to consider using one of these. For the average (advanced) user this isn't necessary.
+Set `BOOTLOADER` in `gentoo.conf` to choose the bootloader:
 
-If you want to add more boot options or want to learn about efibootmgr, refer to [this page on the gentoo wiki](https://wiki.gentoo.org/wiki/Efibootmgr).
+- `grub`: supported by this installer for EFI installs.
+- `limine`: supported for EFI and BIOS installs. The Gentoo package is keyworded, so the installer adds a narrow package keyword for `sys-boot/limine`.
+- `systemd-boot`: EFI only. On OpenRC systems the installer uses `sys-apps/systemd-utils[boot]`; on systemd systems it enables `sys-apps/systemd[boot]`.
+
+For EFI installs, the installer also creates firmware boot entries with `efibootmgr` for the selected loader. For BIOS installs, this installer currently supports Limine and rejects GRUB/systemd-boot instead of forcing an unsafe install.
 
 #### Modern file systems
 

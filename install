@@ -38,21 +38,30 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/functions.sh"
 # shellcheck source=./scripts/main.sh
 source "$GENTOO_INSTALL_REPO_DIR/scripts/main.sh"
 
+# An environment flag alone is not enough to claim the privileged inner mode:
+# the script itself must also execute from the repository bind path mounted by
+# the outer installer inside the target.
+RUNNING_IN_INSTALLER_CHROOT=false
+if [[ ${EXECUTED_IN_CHROOT:-false} == true \
+	&& $GENTOO_INSTALL_REPO_DIR_ORIGINAL == "$GENTOO_INSTALL_REPO_BIND" ]]; then
+	RUNNING_IN_INSTALLER_CHROOT=true
+fi
+export RUNNING_IN_INSTALLER_CHROOT
+readonly RUNNING_IN_INSTALLER_CHROOT
+
 
 ################################################
 # Main dispatch
 
-# Instantly kill when pressing ctrl-c
-trap 'kill "$GENTOO_INSTALL_REPO_SCRIPT_PID"' INT
-
 ACTION=""
 CONFIG="$GENTOO_INSTALL_REPO_DIR/gentoo.conf"
+CHROOT_COMMAND=()
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		""|"help"|"--help"|"-help"|"-h")
 			echo "Usage: $0 [opts]... <action>"
-			echo "Performs a minimal gentoo installation. See https://github.com/oddlama/gentoo-install"
+			echo "Performs a minimal gentoo installation. See https://github.com/firesand/gentoo-easy-install"
 			echo "for more information. If the configuration file does not exist, the configurator will"
 			echo "be started instead."
 			echo ""
@@ -71,33 +80,47 @@ while [[ $# -gt 0 ]]; do
 			exit 0
 			;;
 		"-c"|"--config")
-			[[ -f "$2" ]] \
-				|| die "Config file not found: '$2'"
-			CONFIG="$(cd "$ACTUAL_WORKING_DIRECTORY" && realpath --relative-to="$GENTOO_INSTALL_REPO_DIR" "$2" 2>/dev/null)" || die "Could not determine realpath to config"
+			[[ $# -ge 2 && -n $2 && $2 != -* ]] \
+				|| die "Missing argument for '$1'"
+			if [[ $2 == /* ]]; then
+				CONFIG="$2"
+			else
+				CONFIG="$ACTUAL_WORKING_DIRECTORY/$2"
+			fi
+			CONFIG="$(realpath --canonicalize-missing -- "$CONFIG")" \
+				|| die "Could not determine canonical path to config '$2'"
 			shift
 			;;
 		"-R"|"--chroot")
 			[[ -z $ACTION ]] || die "Multiple actions given"
+			[[ $# -ge 2 && -n $2 && $2 != -* ]] \
+				|| die "Missing argument for '$1'"
 			ACTION="chroot"
-			CHROOT_DIR="$2"
-			[[ -e "$CHROOT_DIR" ]] || die "Chroot directory not found: '$CHROOT_DIR'"
-			shift
+			CHROOT_DIR="$(realpath -e -- "$2")" \
+				|| die "Chroot directory not found: '$2'"
+			[[ -d $CHROOT_DIR ]] \
+				|| die "Chroot target is not a directory: '$CHROOT_DIR'"
+			[[ $CHROOT_DIR != / ]] \
+				|| die "Refusing to use the live system root as a chroot target"
+			shift 2
+			CHROOT_COMMAND=("$@")
+			set --
+			continue
 			;;
 		"-i"|"--install")
 			[[ -z $ACTION ]] || die "Multiple actions given"
 			ACTION="install"
 			;;
 		"__install_gentoo_in_chroot")
+			[[ -z $ACTION ]] || die "Multiple actions given"
+			[[ $RUNNING_IN_INSTALLER_CHROOT == true ]] \
+				|| die "Internal installation action may only run inside the installer chroot"
 			ACTION="__install_gentoo_in_chroot"
 			;;
 		*) die "Invalid option '$1'" ;;
 	esac
 	shift
 done
-
-# Check configuration location
-[[ -z "${CONFIG%%"$GENTOO_INSTALL_REPO_DIR"*}" ]] \
-	|| die "Configuration file must be inside the installation directory. This is needed so it is accessible from within the chroot environment."
 
 if [[ -z "$ACTION" ]]; then
 	if [[ -e "$CONFIG" ]]; then
@@ -111,25 +134,63 @@ if [[ -z "$ACTION" ]]; then
 fi
 
 if [[ "$ACTION" != "chroot" ]]; then
-	# Load config if we aren't just chrooting
-	[[ -e "$CONFIG" ]] \
-		 || die "Configuration file '$CONFIG' does not exist. To run the configurator, omit '-i' flag or run ./configure"
+	# Keep the config inside the bind-mounted repository. A prefix comparison is
+	# not sufficient: /path/repo-other must not count as /path/repo.
+	case "$CONFIG" in
+		"$GENTOO_INSTALL_REPO_DIR"/*)
+			GENTOO_INSTALL_CONFIG_RELATIVE="${CONFIG#"$GENTOO_INSTALL_REPO_DIR"/}"
+			;;
+		*)
+			die "Configuration file must be inside the installation directory. This is needed so it is accessible from within the chroot environment."
+			;;
+	esac
+	readonly GENTOO_INSTALL_CONFIG_RELATIVE
 
-	# shellcheck disable=SC1090
-	source "$CONFIG" || die "Could not source config"
-	[[ $I_HAVE_READ_AND_EDITED_THE_CONFIG_PROPERLY == "true" ]] \
-		|| die "You have not properly read the config. Edit the config file and set I_HAVE_READ_AND_EDITED_THE_CONFIG_PROPERLY=true to continue."
-
-	preprocess_config
 fi
 
 [[ $EUID == 0 ]] \
 	|| die "Must be root"
 
-mkdir_or_die 0755 "$TMP_DIR"
+if [[ "$ACTION" != "chroot" ]]; then
+	# disk_configuration is executable shell code and allocates persistent UUIDs,
+	# so validate its bootstrap dependencies before sourcing or preprocessing it.
+	check_wanted_programs awk base64 basename grep lsblk mkdir realpath sort stat tr uuidgen wc
+
+	[[ -e "$CONFIG" ]] \
+		 || die "Configuration file '$CONFIG' does not exist. To run the configurator, omit '-i' flag or run ./configure"
+	else
+	# Repair/chroot mode does not parse disk configuration, but it still creates
+	# bind mounts, copies resolver state, caches lsblk output, and tears mounts
+	# down again after the command exits.
+	check_wanted_programs chroot install lsblk mkdir mount mountpoint stat umount
+fi
+
+# preprocess_config persists UUID state below TMP_DIR, so the trusted directory
+# must exist before the configuration is sourced or evaluated.
+prepare_secure_tmp_dir
+readonly TMP_DIR ROOT_MOUNTPOINT GENTOO_INSTALL_REPO_BIND UUID_STORAGE_DIR LUKS_HEADER_BACKUP_DIR LUKS_HEADER_TARGET_DIR
+
+if [[ "$ACTION" != "chroot" ]]; then
+	# Load config if we aren't just chrooting.
+	# shellcheck disable=SC1090
+	source "$CONFIG" || die "Could not source config"
+	[[ ${I_HAVE_READ_AND_EDITED_THE_CONFIG_PROPERLY:-false} == "true" ]] \
+		|| die "You have not properly read the config. Edit the config file and set I_HAVE_READ_AND_EDITED_THE_CONFIG_PROPERLY=true to continue."
+
+	preprocess_config
+fi
+
+# Never run host cleanup from the nested installer process inside chroot. The
+# outer process observes its status and owns all host resources.
+if [[ $RUNNING_IN_INSTALLER_CHROOT != true ]]; then
+	trap 'installer_exit_handler "$?"' EXIT
+	trap 'installer_signal_handler 130' INT
+	trap 'installer_signal_handler 143' TERM
+	trap 'installer_signal_handler 129' HUP
+fi
 
 case "$ACTION" in
-	"chroot")  main_chroot "$CHROOT_DIR" "$@" ;;
+	"chroot")  main_chroot "$CHROOT_DIR" "${CHROOT_COMMAND[@]}" ;;
 	"install") main_install "$@" ;;
 	"__install_gentoo_in_chroot") main_install_gentoo_in_chroot "$@" ;;
 	*) die "Invalid action '$ACTION'" ;;

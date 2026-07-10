@@ -1,8 +1,0 @@
-#workspaces, #window, #custom-gentoo, #custom-tec, #custom-usb, #custom-network, #custom-audio, #custom-monitor, #clock {
-  background: rgba(26, 27, 38, 0.88);
-  color: #c0caf5;
-  border: 1px solid #7aa2f7;
-}
-#workspaces button { color: #9aa5ce; }
-#workspaces button.active { color: #7aa2f7; background: transparent; }
-tooltip { background: rgba(26, 27, 38, 0.88); color: #c0caf5; border: 1px solid #7aa2f7; }

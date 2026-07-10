@@ -1,0 +1,67 @@
+name: Lint and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Bash and ShellCheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned ShellCheck
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+          printf '%s  %s\n' "$SHELLCHECK_SHA256" "$archive" | sha256sum --check --strict
+          tar --extract --xz --file "$archive"
+          sudo install --mode=0755 \
+            "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
+            /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Check Bash syntax
+        run: bash -n install configure gentoo.conf gentoo.conf.example scripts/*.sh tests/*.sh
+
+      - name: Run ShellCheck
+        run: tests/shellcheck.sh
+
+      - name: Install pinned actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --location \
+            --retry 3 --retry-all-errors \
+            --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          printf '%s  %s\n' "$ACTIONLINT_SHA256" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" actionlint
+          sudo install --mode=0755 actionlint /usr/local/bin/actionlint
+          actionlint -version
+
+      - name: Validate GitHub Actions workflow
+        run: actionlint
+
+      - name: Run regression tests
+        run: tests/run.sh

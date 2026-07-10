@@ -1,3 +1,0 @@
-sys-power/upower
-sys-power/power-profiles-daemon
-net-wireless/bluez

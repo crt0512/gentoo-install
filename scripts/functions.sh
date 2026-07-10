@@ -6,21 +6,21 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
 # Functions
 
 function sync_time() {
-	einfo "Syncing time"
-	if command -v ntpd &> /dev/null; then
-		try ntpd -g -q
-	elif command -v chrony &> /dev/null; then
-		# See https://github.com/oddlama/gentoo-install/pull/122
-		try chronyd -q
+	einfo "Synchronizing time"
+	if command -v ntpd >/dev/null 2>&1; then
+		ntpd -g -q \
+			|| die "Could not synchronize time with ntpd"
+	elif command -v chronyd >/dev/null 2>&1; then
+		chronyd -q 'pool pool.ntp.org iburst' \
+			|| die "Could not synchronize time with chronyd"
 	else
-		# why am I doing this?
-		try date -s "$(curl -sI http://example.com | grep -i ^date: | cut -d' ' -f3-)"
+		die "No supported NTP client found; refusing unauthenticated HTTP time synchronization"
 	fi
 
 	einfo "Current date: $(LANG=C date)"
 	einfo "Writing time to hardware clock"
 	hwclock --systohc --utc \
-		|| die "Could not save time to hardware clock"
+		|| ewarn "Could not write synchronized time to the hardware clock"
 }
 
 function check_config() {
@@ -59,6 +59,50 @@ function check_config() {
 	else
 		IS_EFI=false
 	fi
+
+	validate_kernel_type
+	validate_bootloader
+	[[ ${MAX_STAGE3_AGE_DAYS:-45} =~ ^[0-9]+$ ]] \
+		|| die "MAX_STAGE3_AGE_DAYS must be a non-negative integer"
+
+	case "${REQUIRE_LUKS_HEADER_EXPORT:-false}" in
+		true|false) ;;
+		*) die "REQUIRE_LUKS_HEADER_EXPORT must be either true or false" ;;
+	esac
+	[[ $LUKS_HEADER_TARGET_DIR == /root/* && $LUKS_HEADER_TARGET_DIR != *'/../'* && $LUKS_HEADER_TARGET_DIR != */.. ]] \
+		|| die "LUKS_HEADER_TARGET_DIR must be a path below /root without '..' components"
+}
+
+function validate_kernel_type() {
+	case "${KERNEL_TYPE:-bin}" in
+		bin|source) return 0 ;;
+		*) die "KERNEL_TYPE must be either 'bin' or 'source' (got '${KERNEL_TYPE}')" ;;
+	esac
+}
+
+function validate_bootloader() {
+	local selected_bootloader="${BOOTLOADER:-}"
+	if [[ -z $selected_bootloader ]]; then
+		if [[ ${IS_EFI:-false} == true ]]; then
+			selected_bootloader=grub
+		else
+			selected_bootloader=limine
+		fi
+		BOOTLOADER="$selected_bootloader"
+	fi
+
+	case "$selected_bootloader" in
+		grub|limine|systemd-boot) ;;
+		*) die "BOOTLOADER must be one of 'grub', 'limine', or 'systemd-boot' (got '$selected_bootloader')" ;;
+	esac
+
+	if [[ $selected_bootloader == "systemd-boot" && ${IS_EFI:-false} != true ]]; then
+		die "BOOTLOADER=systemd-boot requires EFI boot; use type=efi or choose BOOTLOADER=limine"
+	fi
+
+	if [[ $selected_bootloader == "grub" && ${IS_EFI:-false} != true ]]; then
+		die "BOOTLOADER=grub is currently supported only with EFI boot by this installer; use type=efi or choose BOOTLOADER=limine"
+	fi
 }
 
 function preprocess_config() {
@@ -71,29 +115,247 @@ function preprocess_config() {
 	check_config
 }
 
+# Prepare the shared live-environment directory without following a hostile
+# pre-created symlink. Existing directories must already have the exact owner
+# and permissions expected by the installer; silently repairing them could
+# make attacker-controlled contents trusted as installer state.
+function prepare_secure_tmp_dir() {
+	[[ $EUID == 0 ]] \
+		|| die "Must be root"
+	[[ $TMP_DIR == /tmp/* && $TMP_DIR != *'/../'* && $TMP_DIR != */.. ]] \
+		|| die "TMP_DIR must be a direct path below /tmp without '..' components"
+
+	if [[ -e $TMP_DIR || -L $TMP_DIR ]]; then
+		[[ ! -L $TMP_DIR && -d $TMP_DIR ]] \
+			|| die "Unsafe TMP_DIR '$TMP_DIR': expected a non-symlink directory"
+		local owner mode
+		read -r owner mode < <(stat -Lc '%u %a' -- "$TMP_DIR") \
+			|| die "Could not inspect TMP_DIR '$TMP_DIR'"
+		[[ $owner == 0 && $mode == 700 ]] \
+			|| die "Unsafe TMP_DIR '$TMP_DIR': it must be owned by root with mode 0700 (found uid=$owner mode=$mode)"
+	else
+		mkdir --mode=0700 -- "$TMP_DIR" \
+			|| die "Could not create secure TMP_DIR '$TMP_DIR'"
+	fi
+
+	# Re-check after creation to catch unexpected replacement as early as shell
+	# tooling permits. All sensitive child paths inherit the installer's umask.
+	[[ ! -L $TMP_DIR && -d $TMP_DIR ]] \
+		|| die "TMP_DIR '$TMP_DIR' was replaced while being prepared"
+	local final_owner final_mode
+	read -r final_owner final_mode < <(stat -Lc '%u %a' -- "$TMP_DIR") \
+		|| die "Could not verify TMP_DIR '$TMP_DIR'"
+	[[ $final_owner == 0 && $final_mode == 700 ]] \
+		|| die "TMP_DIR '$TMP_DIR' failed its final ownership or permission check"
+}
+
+function installer_luks_mapping_is_active() {
+	cryptsetup status "$1" >/dev/null 2>&1
+}
+
+function installer_md_array_is_active() {
+	mdadm --detail "$1" >/dev/null 2>&1
+}
+
+function installer_rpool_is_active() {
+	zpool list -H -o name rpool 2>/dev/null | grep -qx rpool
+}
+
+# Record resource state before invoking any destructive action. A name
+# collision is rejected rather than later guessing which resource is ours.
+function capture_installer_resource_baselines() {
+	local resource
+
+	for resource in "${INSTALLER_PLANNED_MD_ARRAYS[@]}"; do
+		if installer_md_array_is_active "$resource"; then
+			INSTALLER_MD_ARRAY_PREEXISTED[$resource]=true
+			die "Refusing disk actions: RAID array '$resource' is already active"
+		fi
+		INSTALLER_MD_ARRAY_PREEXISTED[$resource]=false
+	done
+
+	for resource in "${INSTALLER_PLANNED_LUKS_MAPPINGS[@]}"; do
+		if installer_luks_mapping_is_active "$resource"; then
+			INSTALLER_LUKS_MAPPING_PREEXISTED[$resource]=true
+			die "Refusing disk actions: LUKS mapping '$resource' is already active"
+		fi
+		INSTALLER_LUKS_MAPPING_PREEXISTED[$resource]=false
+	done
+
+	if [[ $USED_ZFS == true ]] && installer_rpool_is_active; then
+		INSTALLER_RPOOL_PREEXISTED=true
+		die "Refusing disk actions: ZFS pool 'rpool' is already imported"
+	fi
+	INSTALLER_RPOOL_PREEXISTED=false
+	INSTALLER_RESOURCE_BASELINES_CAPTURED=true
+}
+
+function record_installer_created_mount() {
+	local mount_path="$1"
+	if [[ ! -v "INSTALLER_CREATED_MOUNT_SET[$mount_path]" ]]; then
+		INSTALLER_CREATED_MOUNT_SET[$mount_path]=true
+		INSTALLER_CREATED_MOUNTS+=("$mount_path")
+	fi
+}
+
+function unrecord_installer_created_mount() {
+	local mount_path="$1"
+	local recorded_path
+	local -a remaining_mounts=()
+
+	unset 'INSTALLER_CREATED_MOUNT_SET[$mount_path]'
+	for recorded_path in "${INSTALLER_CREATED_MOUNTS[@]}"; do
+		[[ $recorded_path == "$mount_path" ]] \
+			|| remaining_mounts+=("$recorded_path")
+	done
+	INSTALLER_CREATED_MOUNTS=("${remaining_mounts[@]}")
+}
+
+# Best-effort and idempotent: this function is called from EXIT handling, where
+# preserving the original failure status matters more than a secondary error.
+function cleanup_installer_mounts() {
+	if [[ $INSTALLER_OWNS_TARGET_MOUNTS == true ]] \
+		&& command -v mountpoint >/dev/null 2>&1 \
+		&& mountpoint -q -- "$ROOT_MOUNTPOINT"; then
+		einfo "Cleaning target filesystems below '$ROOT_MOUNTPOINT'"
+		umount -R -l -- "$ROOT_MOUNTPOINT" \
+			|| ewarn "Could not fully unmount target filesystems below '$ROOT_MOUNTPOINT'"
+	fi
+	cleanup_installer_mounts_from 0
+	return 0
+}
+
+function cleanup_installer_mounts_from() {
+	local start_index="$1"
+	local i mount_path
+	local cleanup_status=0
+	local -a mounts_to_clean=("${INSTALLER_CREATED_MOUNTS[@]:start_index}")
+
+	for ((i=${#mounts_to_clean[@]} - 1; i >= 0; i--)); do
+		mount_path="${mounts_to_clean[$i]}"
+		command -v mountpoint >/dev/null 2>&1 || continue
+		if mountpoint -q -- "$mount_path"; then
+			einfo "Cleaning installer-created mount '$mount_path'"
+			if ! umount -R -l -- "$mount_path"; then
+				ewarn "Could not unmount installer-created mount '$mount_path'"
+				cleanup_status=1
+				continue
+			fi
+		fi
+		unrecord_installer_created_mount "$mount_path"
+	done
+	return "$cleanup_status"
+}
+
+function cleanup_installer_failure_resources() {
+	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] || return 0
+	[[ $INSTALLER_FAILURE_CLEANUP_RUNNING != true ]] || return 0
+	INSTALLER_FAILURE_CLEANUP_RUNNING=true
+
+	cleanup_installer_mounts
+
+	if [[ $INSTALLER_RESOURCE_BASELINES_CAPTURED == true ]]; then
+		if [[ $INSTALLER_CREATED_RPOOL == true ]] \
+			&& command -v zpool >/dev/null 2>&1 \
+			&& installer_rpool_is_active; then
+			einfo "Exporting installer-created ZFS pool 'rpool'"
+			zpool export rpool \
+				|| ewarn "Could not export installer-created ZFS pool 'rpool'"
+		fi
+
+		local i resource
+		for ((i=${#INSTALLER_CREATED_LUKS_MAPPINGS[@]} - 1; i >= 0; i--)); do
+			resource="${INSTALLER_CREATED_LUKS_MAPPINGS[$i]}"
+			command -v cryptsetup >/dev/null 2>&1 || continue
+			installer_luks_mapping_is_active "$resource" || continue
+			einfo "Closing installer-created LUKS mapping '$resource'"
+			cryptsetup close "$resource" \
+				|| ewarn "Could not close installer-created LUKS mapping '$resource'"
+		done
+
+		for ((i=${#INSTALLER_CREATED_MD_ARRAYS[@]} - 1; i >= 0; i--)); do
+			resource="${INSTALLER_CREATED_MD_ARRAYS[$i]}"
+			command -v mdadm >/dev/null 2>&1 || continue
+			installer_md_array_is_active "$resource" || continue
+			einfo "Stopping installer-created RAID array '$resource'"
+			mdadm --stop "$resource" \
+				|| ewarn "Could not stop installer-created RAID array '$resource'"
+		done
+	fi
+
+	INSTALLER_FAILURE_CLEANUP_RUNNING=false
+}
+
+function installer_exit_handler() {
+	local status="$1"
+	trap - EXIT INT TERM HUP
+	[[ $status -ne 0 ]] || return 0
+	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] || return 0
+	cleanup_installer_failure_resources
+}
+
+function installer_signal_handler() {
+	local status="$1"
+	trap - INT TERM HUP
+	exit "$status"
+}
+
 function prepare_installation_environment() {
-	maybe_exec 'before_prepare_environment'
+	maybe_exec 'before_prepare_environment' \
+		|| die "Hook before_prepare_environment failed"
 
 	einfo "Preparing installation environment"
 
 	local wanted_programs=(
+		awk
+		base64
+		basename
+		blkid
+		chroot
+		date
+		dirname
+		find
+		grep
 		gpg
+		head
 		hwclock
+		install
 		lsblk
-		ntpd
+		mkfs.fat
+		mktemp
+		mount
+		mountpoint
 		partprobe
 		python3
-		"?rhash"
+		readlink
+		realpath
+		sed
 		sha512sum
 		sgdisk
+		sort
+		stat
+		tar
+		tr
+		umount
 		uuidgen
+		wc
 		wget
+		wipefs
 	)
+	if command -v chronyd >/dev/null 2>&1; then
+		wanted_programs+=(chronyd)
+	else
+		wanted_programs+=(ntpd)
+	fi
 
+	[[ -v DISK_ID_SWAP ]] \
+		&& wanted_programs+=(mkswap)
+	[[ $DISK_ID_ROOT_TYPE == "ext4" ]] \
+		&& wanted_programs+=(mkfs.ext4)
 	[[ $USED_BTRFS == "true" ]] \
-		&& wanted_programs+=(btrfs)
+		&& wanted_programs+=(btrfs mkfs.btrfs)
 	[[ $USED_ZFS == "true" ]] \
-		&& wanted_programs+=(zfs)
+		&& wanted_programs+=(zfs zpool)
 	[[ $USED_RAID == "true" ]] \
 		&& wanted_programs+=(mdadm)
 	[[ $USED_LUKS == "true" ]] \
@@ -101,11 +363,43 @@ function prepare_installation_environment() {
 
 	# Check for existence of required programs
 	check_wanted_programs "${wanted_programs[@]}"
+	validate_luks_header_export_destination
 
 	# Sync time now to prevent issues later
 	sync_time
 
-	maybe_exec 'after_prepare_environment'
+	maybe_exec 'after_prepare_environment' \
+		|| die "Hook after_prepare_environment failed"
+}
+
+function validate_luks_header_export_destination() {
+	LUKS_HEADER_EXPORT_READY=false
+	[[ $USED_LUKS == true ]] || return 0
+
+	if [[ -z ${LUKS_HEADER_EXPORT_DIR:-} ]]; then
+		[[ $REQUIRE_LUKS_HEADER_EXPORT != true ]] \
+			|| die "REQUIRE_LUKS_HEADER_EXPORT=true requires LUKS_HEADER_EXPORT_DIR"
+		return 0
+	fi
+
+	local reason=""
+	[[ $LUKS_HEADER_EXPORT_DIR == /* ]] \
+		|| reason="it is not an absolute path"
+	if [[ -z $reason && ( -L $LUKS_HEADER_EXPORT_DIR || ! -d $LUKS_HEADER_EXPORT_DIR ) ]]; then
+		reason="it is not an existing non-symlink directory"
+	fi
+	[[ -n $reason || -w $LUKS_HEADER_EXPORT_DIR ]] \
+		|| reason="it is not writable"
+
+	if [[ -n $reason ]]; then
+		if [[ $REQUIRE_LUKS_HEADER_EXPORT == true ]]; then
+			die "Required LUKS header export directory '$LUKS_HEADER_EXPORT_DIR' is unavailable: $reason"
+		fi
+		ewarn "Skipping optional LUKS header export to '$LUKS_HEADER_EXPORT_DIR': $reason"
+		return 0
+	fi
+
+	LUKS_HEADER_EXPORT_READY=true
 }
 
 function check_encryption_key() {
@@ -198,8 +492,9 @@ function disk_create_gpt() {
 	local device
 	local device_desc=""
 	if [[ -v arguments[id] ]]; then
-		device="$(resolve_device_by_id "${arguments[id]}")"
-		device_desc="$device ($id)"
+		device="$(resolve_device_by_id "${arguments[id]}")" \
+			|| die "Could not resolve device with id=${arguments[id]}"
+		device_desc="$device (${arguments[id]})"
 	else
 		device="${arguments[device]}"
 		device_desc="$device"
@@ -212,7 +507,8 @@ function disk_create_gpt() {
 		|| die "Could not erase previous file system signatures from '$device'"
 	sgdisk -Z -U "$ptuuid" "$device" >/dev/null \
 		|| die "Could not create new gpt partition table ($new_id) on '$device'"
-	partprobe "$device"
+	partprobe "$device" \
+		|| die "Could not notify the kernel about the new GPT on '$device'"
 }
 
 function disk_create_partition() {
@@ -250,12 +546,11 @@ function disk_create_partition() {
 	# shellcheck disable=SC2086
 	sgdisk -n "0:0:$arg_size" -t "0:$type" -u "0:$partuuid" $extra_args "$device" >/dev/null \
 		|| die "Could not create new gpt partition ($new_id) on '$device' ($id)"
-	partprobe "$device"
+	partprobe "$device" \
+		|| die "Could not notify the kernel about the new partition on '$device'"
 
 	# On some system, we need to wait a bit for the partition to show up.
-	local new_device
-	new_device="$(resolve_device_by_id "$new_id")" \
-		|| die "Could not resolve new device with id=$new_id"
+	local new_device="/dev/disk/by-partuuid/${partuuid,,}"
 	for i in {1..10}; do
 		[[ -e "$new_device" ]] && break
 		[[ "$i" -eq 1 ]] && printf "Waiting for partition (%s) to appear..." "$new_device"
@@ -263,6 +558,8 @@ function disk_create_partition() {
 		sleep 1
 		[[ "$i" -eq 10 ]] && echo
 	done
+	[[ -e $new_device ]] \
+		|| die "New partition ($new_id) did not appear at '$new_device'"
 }
 
 function disk_create_raid() {
@@ -300,7 +597,7 @@ function disk_create_raid() {
 	local uuid="${DISK_ID_TO_UUID[$new_id]}"
 
 	extra_args=()
-	if [[ "$level" == 1 && "$name" == "efi" ]]; then
+	if [[ "$level" == 1 && ("$name" == "efi" || "$name" == "bios") ]]; then
 		extra_args+=("--metadata=1.0")
 	else
 		extra_args+=("--metadata=1.2")
@@ -318,6 +615,7 @@ function disk_create_raid() {
 			"${extra_args[@]}" \
 			"${devices[@]}" \
 		|| die "Could not create raid$level array '$mddevice' ($new_id) on $devices_desc"
+	INSTALLER_CREATED_MD_ARRAYS+=("$mddevice")
 }
 
 function disk_create_luks() {
@@ -335,8 +633,9 @@ function disk_create_luks() {
 	local device
 	local device_desc=""
 	if [[ -v arguments[id] ]]; then
-		device="$(resolve_device_by_id "${arguments[id]}")"
-		device_desc="$device ($id)"
+		device="$(resolve_device_by_id "${arguments[id]}")" \
+			|| die "Could not resolve device with id=${arguments[id]}"
+		device_desc="$device (${arguments[id]})"
 	else
 		device="${arguments[device]}"
 		device_desc="$device"
@@ -357,19 +656,25 @@ function disk_create_luks() {
 			--batch-mode \
 			"$device" \
 		|| die "Could not create luks on $device_desc"
-	mkdir -p "$LUKS_HEADER_BACKUP_DIR" \
-		|| die "Could not create luks header backup dir '$LUKS_HEADER_BACKUP_DIR'"
-	local header_file="$LUKS_HEADER_BACKUP_DIR/luks-header-$id-${uuid,,}.img"
+	[[ ! -L $LUKS_HEADER_BACKUP_DIR ]] \
+		|| die "Refusing symlink LUKS header backup directory '$LUKS_HEADER_BACKUP_DIR'"
+	install -d -m 0700 -o root -g root -- "$LUKS_HEADER_BACKUP_DIR" \
+		|| die "Could not create LUKS header backup dir '$LUKS_HEADER_BACKUP_DIR'"
+	local header_file="$LUKS_HEADER_BACKUP_DIR/luks-header-${uuid,,}.img"
 	[[ ! -e $header_file ]] \
 		|| rm "$header_file" \
 		|| die "Could not remove old luks header backup file '$header_file'"
 	cryptsetup luksHeaderBackup "$device" \
 			--header-backup-file "$header_file" \
 		|| die "Could not backup luks header on $device_desc"
+	chmod 0400 -- "$header_file" \
+		|| die "Could not protect LUKS header backup '$header_file'"
+	INSTALLER_CREATED_LUKS_HEADERS+=("$header_file")
 	cryptsetup open --type luks2 \
 			--key-file <(echo -n "$GENTOO_INSTALL_ENCRYPTION_KEY") \
 			"$device" "$name" \
 		|| die "Could not open luks encrypted device $device_desc"
+	INSTALLER_CREATED_LUKS_MAPPINGS+=("$name")
 }
 
 function disk_create_dummy() {
@@ -388,18 +693,20 @@ function init_btrfs() {
 		|| die "Could not create /btrfs directory"
 	mount "$device" /btrfs \
 		|| die "Could not mount $desc to /btrfs"
+	record_installer_created_mount /btrfs
 	btrfs subvolume create /btrfs/root \
 		|| die "Could not create btrfs subvolume /root on $desc"
 	btrfs subvolume set-default /btrfs/root \
 		|| die "Could not set default btrfs subvolume to /root on $desc"
 	umount /btrfs \
 		|| die "Could not unmount btrfs on $desc"
+	unrecord_installer_created_mount /btrfs
 }
 
 function disk_format() {
 	local id="${arguments[id]}"
 	local type="${arguments[type]}"
-	local label="${arguments[label]}"
+	local label="${arguments[label]-}"
 	if [[ ${disk_action_summarize_only-false} == "true" ]]; then
 		add_summary_entry "${arguments[id]}" "__fs__${arguments[id]}" "${arguments[type]}" "(fs)" "$(summary_color_args label)"
 		return 0
@@ -501,6 +808,7 @@ function format_zfs_standard() {
 		"${devices[@]}"       \
 			<<< "$zfs_stdin"  \
 		|| die "Could not create zfs pool on $devices_desc"
+	INSTALLER_CREATED_RPOOL=true
 
 	if [[ "$compress" != false ]]; then
 		zfs set "compression=$compress" rpool \
@@ -516,7 +824,7 @@ function format_zfs_standard() {
 
 function disk_format_zfs() {
 	local ids="${arguments[ids]}"
-	local pool_type="${arguments[pool_type]}"
+	local pool_type="${arguments[pool_type]:-standard}"
 	local encrypt="${arguments[encrypt]-false}"
 	local compress="${arguments[compress]-false}"
 	if [[ ${disk_action_summarize_only-false} == "true" ]]; then
@@ -547,16 +855,21 @@ function disk_format_zfs() {
 		|| die "Could not erase previous file system signatures from $devices_desc"
 
 	if [[ "$pool_type" == "custom" ]]; then
-		format_zfs_custom "$devices_desc" "${devices[@]}"
+		format_zfs_custom "$devices_desc" "${devices[@]}" \
+			|| die "Custom ZFS pool creation failed"
 	else
-		format_zfs_standard "$encrypt" "$compress" "$devices_desc" "${devices[@]}"
+		format_zfs_standard "$encrypt" "$compress" "$devices_desc" "${devices[@]}" \
+			|| die "Standard ZFS pool creation failed"
 	fi
+	installer_rpool_is_active \
+		|| die "ZFS formatting returned without an active 'rpool'"
+	INSTALLER_CREATED_RPOOL=true
 }
 
 function disk_format_btrfs() {
 	local ids="${arguments[ids]}"
-	local label="${arguments[label]}"
-	local raid_type="${arguments[raid_type]}"
+	local label="${arguments[label]-}"
+	local raid_type="${arguments[raid_type]:-raid0}"
 	if [[ ${disk_action_summarize_only-false} == "true" ]]; then
 		local id
 		# Splitting is intentional here
@@ -740,22 +1053,51 @@ function summarize_disk_actions() {
 
 function apply_disk_configuration() {
 	summarize_disk_actions
+	capture_installer_resource_baselines
+	local -a confirmed_destructive_devices=()
 
 	if [[ $NO_PARTITIONING_OR_FORMATTING == true ]]; then
 		elog "You have chosen an existing disk configuration. No devices will"
 		elog "actually be re-partitioned or formatted. Please make sure that all"
 		elog "devices are already formatted."
+		ask "Do you want to use this existing disk configuration?" \
+			|| die "Aborted"
 	else
-		ewarn "Please ensure that all selected devices are fully unmounted and are"
-		ewarn "not otherwise in use by the system. This includes stopping mdadm arrays"
-		ewarn "and closing opened luks volumes if applicable for all relevant devices."
-		ewarn "Otherwise, automatic partitioning may fail."
+		[[ ${#DESTRUCTIVE_DEVICES[@]} -gt 0 ]] \
+			|| die "No physical devices were registered for destructive disk actions"
+		# Re-check immediately before confirmation. A device may have become busy
+		# after the configuration was initially parsed.
+		validate_destructive_whole_block_devices 1 "configured disk layout" "${DESTRUCTIVE_DEVICES[@]}"
+
+		ewarn "The following whole devices will be irreversibly erased:"
+		local destructive_device
+		for destructive_device in "${DESTRUCTIVE_DEVICES[@]}"; do
+			ewarn "  $destructive_device"
+		done
+		local confirmation_phrase="WIPE ${DESTRUCTIVE_DEVICES[*]}"
+		confirm_destructive_action "$confirmation_phrase" "This destroys all data on the listed devices." \
+			|| die "Destructive disk operation cancelled"
+		confirmed_destructive_devices=("${DESTRUCTIVE_DEVICES[@]}")
 	fi
-	ask "Do you really want to apply this disk configuration?" \
-		|| die "Aborted"
 	countdown "Applying in " 5
 
-	maybe_exec 'before_disk_configuration'
+	maybe_exec 'before_disk_configuration' \
+		|| die "Hook before_disk_configuration failed"
+	if [[ $NO_PARTITIONING_OR_FORMATTING != true ]]; then
+		[[ ${#DESTRUCTIVE_DEVICES[@]} -eq ${#confirmed_destructive_devices[@]} ]] \
+			|| die "Destructive-device set changed after confirmation"
+		local confirmed_index
+		for confirmed_index in "${!confirmed_destructive_devices[@]}"; do
+			[[ ${DESTRUCTIVE_DEVICES[$confirmed_index]} == "${confirmed_destructive_devices[$confirmed_index]}" ]] \
+				|| die "Destructive-device set changed after confirmation"
+		done
+		# Close the automount/hotplug window after the prompt, countdown, and
+		# user-defined hook. No destructive command runs after a failed recheck.
+		validate_destructive_whole_block_devices \
+			1 \
+			"confirmed disk layout" \
+			"${confirmed_destructive_devices[@]}"
+	fi
 
 	einfo "Applying disk configuration"
 	apply_disk_actions
@@ -765,7 +1107,8 @@ function apply_disk_configuration() {
 	for_line_in <(lsblk \
 		|| die "Error in lsblk") elog
 
-	maybe_exec 'after_disk_configuration'
+	maybe_exec 'after_disk_configuration' \
+		|| die "Hook after_disk_configuration failed"
 }
 
 function mount_efivars() {
@@ -777,6 +1120,7 @@ function mount_efivars() {
 	einfo "Mounting efivars"
 	mount -t efivarfs efivarfs "/sys/firmware/efi/efivars" \
 		|| die "Could not mount efivarfs"
+	record_installer_created_mount "/sys/firmware/efi/efivars"
 }
 
 function mount_by_id() {
@@ -796,6 +1140,7 @@ function mount_by_id() {
 		|| die "Could not resolve device with id=$id"
 	mount "$dev" "$mountpoint" \
 		|| die "Could not mount device '$dev'"
+	record_installer_created_mount "$mountpoint"
 }
 
 function mount_root() {
@@ -807,20 +1152,227 @@ function mount_root() {
 }
 
 function bind_repo_dir() {
-	# Use new location by default
+	local chroot_dir="$1"
+	local host_bind_target="$chroot_dir$GENTOO_INSTALL_REPO_BIND"
+
+	# Commands inside the chroot use this logical location. Mount it directly
+	# below the target instead of relying on the target's /tmp being an rbind of
+	# the host /tmp; a separately mounted target /tmp is valid and common.
 	export GENTOO_INSTALL_REPO_DIR="$GENTOO_INSTALL_REPO_BIND"
 
-	# Bind the repo dir to a location in /tmp,
-	# so it can be accessed from within the chroot
-	mountpoint -q -- "$GENTOO_INSTALL_REPO_BIND" \
-		&& return
+	[[ ! -L $host_bind_target ]] \
+		|| die "Refusing symlink repository bind target '$host_bind_target'"
+	mountpoint -q -- "$host_bind_target" \
+		&& die "Repository bind target is unexpectedly already mounted: '$host_bind_target'"
 
-	# Mount root device
 	einfo "Bind mounting repo directory"
-	mkdir -p "$GENTOO_INSTALL_REPO_BIND" \
-		|| die "Could not create mountpoint directory '$GENTOO_INSTALL_REPO_BIND'"
-	mount --bind "$GENTOO_INSTALL_REPO_DIR_ORIGINAL" "$GENTOO_INSTALL_REPO_BIND" \
-		|| die "Could not bind mount '$GENTOO_INSTALL_REPO_DIR_ORIGINAL' to '$GENTOO_INSTALL_REPO_BIND'"
+	install -d -m 0700 -o root -g root -- "$host_bind_target" \
+		|| die "Could not create mountpoint directory '$host_bind_target'"
+	mount --bind "$GENTOO_INSTALL_REPO_DIR_ORIGINAL" "$host_bind_target" \
+		|| die "Could not bind mount '$GENTOO_INSTALL_REPO_DIR_ORIGINAL' to '$host_bind_target'"
+	record_installer_created_mount "$host_bind_target"
+}
+
+function prepare_chroot_installer_tmp_dir() {
+	local chroot_dir="$1"
+	local target_tmp="$chroot_dir$TMP_DIR"
+	local owner mode
+
+	[[ ! -L $chroot_dir/tmp ]] \
+		|| die "Refusing symlink /tmp inside chroot: '$chroot_dir/tmp'"
+	[[ ! -L $target_tmp ]] \
+		|| die "Refusing symlink installer directory inside chroot: '$target_tmp'"
+	install -d -m 0700 -o root -g root -- "$target_tmp" \
+		|| die "Could not create secure installer directory inside chroot: '$target_tmp'"
+	read -r owner mode < <(stat -Lc '%u %a' -- "$target_tmp") \
+		|| die "Could not inspect installer directory inside chroot: '$target_tmp'"
+	[[ $owner == 0 && $mode == 700 ]] \
+		|| die "Installer directory inside chroot must be root-owned mode 0700: '$target_tmp'"
+}
+
+function bind_installer_uuid_storage() {
+	local chroot_dir="$1"
+	local host_target="$chroot_dir$UUID_STORAGE_DIR"
+
+	[[ ! -L $UUID_STORAGE_DIR ]] \
+		|| die "Refusing symlink UUID storage '$UUID_STORAGE_DIR'"
+	install -d -m 0700 -o root -g root -- "$UUID_STORAGE_DIR" \
+		|| die "Could not prepare UUID storage '$UUID_STORAGE_DIR'"
+	[[ ! -L $host_target ]] \
+		|| die "Refusing symlink UUID storage inside chroot: '$host_target'"
+	install -d -m 0700 -o root -g root -- "$host_target" \
+		|| die "Could not prepare UUID storage inside chroot: '$host_target'"
+	mountpoint -q -- "$host_target" \
+		&& die "UUID storage inside chroot is already a mountpoint: '$host_target'"
+	mount --bind "$UUID_STORAGE_DIR" "$host_target" \
+		|| die "Could not share installer UUID storage with chroot"
+	record_installer_created_mount "$host_target"
+}
+
+function gentoo_release_key_uid_for_fingerprint() {
+	case "$1" in
+		13EBBDBEDE7A12775DFDB1BABB572E0E2D182910)
+			echo 'Gentoo Linux Release Engineering (Automated Weekly Release Key) <releng@gentoo.org>'
+			;;
+		D99EAC7379A850BCE47DA5F29E6438C817072058)
+			echo 'Gentoo Linux Release Engineering (Gentoo Linux Release Signing Key) <releng@gentoo.org>'
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+function extract_verified_openpgp_payload() {
+	local gpg_home="$1"
+	local signed_file="$2"
+	local output_file="$3"
+
+	[[ ! -e $output_file && ! -L $output_file ]] \
+		|| { eerror "Refusing existing OpenPGP payload output '$output_file'"; return 1; }
+	gpg --homedir "$gpg_home" \
+		--batch \
+		--status-fd=1 \
+		--output "$output_file" \
+		--decrypt "$signed_file" 2>/dev/null
+}
+
+function verify_gentoo_release_signature() (
+	local signed_file="$1"
+	local gpg_home
+	gpg_home="$(mktemp -d "${TMP_DIR%/}/gentoo-releng-gpg.XXXXXXXX")" \
+		|| { eerror "Could not create an isolated GnuPG directory"; return 1; }
+	trap 'rm -rf -- "$gpg_home"' EXIT
+	chmod 0700 "$gpg_home" \
+		|| { eerror "Could not secure the isolated GnuPG directory"; return 1; }
+	export GNUPGHOME="$gpg_home"
+
+	local key_file="$gpg_home/releng.gpg"
+	download 'https://gentoo.org/.well-known/openpgpkey/hu/wtktzo4gyuhzu8a4z5fdj3fgmr1u6tob?l=releng' "$key_file" \
+		|| { eerror "Could not retrieve the Gentoo release engineering key"; return 1; }
+	gpg --homedir "$gpg_home" --batch --quiet --import-options import-minimal --import "$key_file" \
+		|| { eerror "Could not import the Gentoo release engineering key"; return 1; }
+
+	# Pin both release-media keys published by Gentoo.  Do not trust a key merely
+	# because it was returned by the WKD endpoint.
+	local -a trusted_fingerprints=(
+		13EBBDBEDE7A12775DFDB1BABB572E0E2D182910
+		D99EAC7379A850BCE47DA5F29E6438C817072058
+	)
+	local fingerprint expected_uid key_details imported_fingerprint
+	local trusted_key_found=false
+	for fingerprint in "${trusted_fingerprints[@]}"; do
+		expected_uid="$(gentoo_release_key_uid_for_fingerprint "$fingerprint")" \
+			|| { eerror "Missing identity for trusted Gentoo key '$fingerprint'"; return 1; }
+		key_details="$(gpg --homedir "$gpg_home" --batch --with-colons --fingerprint --list-keys "$fingerprint" 2>/dev/null)" \
+			|| continue
+		imported_fingerprint="$(awk -F: '$1 == "fpr" { print $10; exit }' <<< "$key_details")"
+		[[ $imported_fingerprint == "$fingerprint" ]] \
+			|| { eerror "Gentoo release key fingerprint mismatch"; return 1; }
+		awk -F: -v expected_uid="$expected_uid" \
+			'$1 == "uid" && $2 != "r" && $2 != "d" && $10 == expected_uid { found = 1 } END { exit !found }' <<< "$key_details" \
+			|| { eerror "Gentoo release key identity mismatch for '$fingerprint'"; return 1; }
+		trusted_key_found=true
+	done
+	[[ $trusted_key_found == true ]] \
+		|| { eerror "No trusted Gentoo release key was imported"; return 1; }
+
+	# Verify and extract the signed cleartext in one GnuPG operation. Callers must
+	# hash only this payload; bytes appended after the clearsigned message are not
+	# authenticated even when GnuPG reports a valid signature for the message.
+	local verified_payload="$gpg_home/verified-digests"
+	local signature_status
+	signature_status="$(extract_verified_openpgp_payload "$gpg_home" "$signed_file" "$verified_payload")" \
+		|| { eerror "OpenPGP signature verification failed for '$signed_file'"; return 1; }
+	[[ -s $verified_payload ]] \
+		|| { eerror "Verified OpenPGP payload for '$signed_file' is empty"; return 1; }
+	if grep -Eq '^\[GNUPG:\] (BADSIG|ERRSIG|EXPSIG|EXPKEYSIG|KEYEXPIRED|REVKEYSIG|KEYREVOKED|NO_PUBKEY|SIGEXPIRED)( |$)' <<< "$signature_status"; then
+		eerror "OpenPGP reported an invalid, expired, or revoked signature for '$signed_file'"
+		return 1
+	fi
+
+	local -a valid_signatures=()
+	mapfile -t valid_signatures < <(
+		awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" {
+			primary = (NF >= 12 ? $12 : $3)
+			print $3, primary
+		}' <<< "$signature_status"
+	)
+	[[ ${#valid_signatures[@]} -eq 1 ]] \
+		|| { eerror "Expected exactly one valid OpenPGP signature for '$signed_file'"; return 1; }
+
+	local signing_fingerprint primary_fingerprint
+	read -r signing_fingerprint primary_fingerprint <<< "${valid_signatures[0]}"
+	expected_uid="$(gentoo_release_key_uid_for_fingerprint "$primary_fingerprint")" \
+		|| { eerror "Signature was made by untrusted key '$primary_fingerprint'"; return 1; }
+	[[ $signing_fingerprint =~ ^[0-9A-F]{40}$ ]] \
+		|| { eerror "GnuPG returned an invalid signing-key fingerprint"; return 1; }
+
+	# Re-check the UID on the exact primary key which made the signature.
+	key_details="$(gpg --homedir "$gpg_home" --batch --with-colons --fingerprint --list-keys "$primary_fingerprint" 2>/dev/null)" \
+		|| { eerror "Could not inspect the Gentoo signing key"; return 1; }
+	awk -F: -v expected_uid="$expected_uid" \
+		'$1 == "uid" && $2 != "r" && $2 != "d" && $10 == expected_uid { found = 1 } END { exit !found }' <<< "$key_details" \
+		|| { eerror "Gentoo signing-key identity does not match its pinned identity"; return 1; }
+
+	cat -- "$verified_payload" \
+		|| { eerror "Could not return verified OpenPGP payload"; return 1; }
+)
+
+function verify_stage3_sha512() {
+	local archive="$1"
+	local digests_file="$2"
+	local -a expected_hashes=()
+
+	# A DIGESTS file contains multiple algorithms and may contain checksums for
+	# related files.  Select only the SHA512 entry whose filename is exactly the
+	# stage3 archive requested by the installer.
+	mapfile -t expected_hashes < <(
+		awk -v archive="$archive" '
+			$0 == "# SHA512 HASH" { in_sha512 = 1; next }
+			/^# / { in_sha512 = 0; next }
+			in_sha512 && NF == 2 && $2 == archive { print $1 }
+		' "$digests_file"
+	)
+	[[ ${#expected_hashes[@]} -eq 1 ]] \
+		|| { eerror "Expected exactly one SHA512 checksum for '$archive'"; return 1; }
+	[[ ${expected_hashes[0]} =~ ^[[:xdigit:]]{128}$ ]] \
+		|| { eerror "Invalid SHA512 checksum for '$archive'"; return 1; }
+
+	local checksum_output actual_hash expected_hash
+	checksum_output="$(sha512sum -- "$archive")" \
+		|| { eerror "Could not calculate SHA512 checksum for '$archive'"; return 1; }
+	actual_hash="${checksum_output%% *}"
+	expected_hash="${expected_hashes[0],,}"
+	[[ $actual_hash == "$expected_hash" ]] \
+		|| { eerror "SHA512 checksum mismatch for '$archive'"; return 1; }
+}
+
+function validate_stage3_freshness() {
+	local archive="$1"
+	local max_age_days="${MAX_STAGE3_AGE_DAYS:-45}"
+	[[ $max_age_days =~ ^[0-9]+$ ]] \
+		|| { eerror "MAX_STAGE3_AGE_DAYS must be a non-negative integer"; return 1; }
+	[[ $max_age_days -gt 0 ]] || return 0
+
+	[[ $archive =~ -([0-9]{8})T([0-9]{6})Z\.tar\.xz$ ]] \
+		|| { eerror "Could not parse stage3 build timestamp from '$archive'"; return 1; }
+	local build_date="${BASH_REMATCH[1]}"
+	local build_time="${BASH_REMATCH[2]}"
+	local build_epoch now_epoch
+	build_epoch="$(date -u -d \
+		"${build_date:0:4}-${build_date:4:2}-${build_date:6:2} ${build_time:0:2}:${build_time:2:2}:${build_time:4:2} UTC" \
+		+%s 2>/dev/null)" \
+		|| { eerror "Invalid stage3 build timestamp in '$archive'"; return 1; }
+	now_epoch="$(date -u +%s)" \
+		|| { eerror "Could not read current time for stage3 freshness check"; return 1; }
+
+	# Permit modest clock/release skew, but reject implausible future builds.
+	[[ $build_epoch -le $((now_epoch + 86400)) ]] \
+		|| { eerror "Stage3 '$archive' is dated too far in the future"; return 1; }
+	local age_seconds=$((now_epoch - build_epoch))
+	[[ $age_seconds -le $((max_age_days * 86400)) ]] \
+		|| { eerror "Stage3 '$archive' is older than the allowed $max_age_days days"; return 1; }
 }
 
 function download_stage3() {
@@ -840,56 +1392,76 @@ function download_stage3() {
 	CURRENT_STAGE3="$(download_stdout "$STAGE3_RELEASES")" \
 		|| die "Could not retrieve list of tarballs"
 	# Decode urlencoded strings
-	CURRENT_STAGE3=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read()))' <<< "$CURRENT_STAGE3")
+	CURRENT_STAGE3="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read()))' <<< "$CURRENT_STAGE3")" \
+		|| die "Could not decode the stage3 listing"
 	# Parse output for correct filename
 	CURRENT_STAGE3="$(grep -o "\"${STAGE3_BASENAME_FINAL}-[0-9A-Z]*.tar.xz\"" <<< "$CURRENT_STAGE3" \
-		| sort -u | head -1)" \
+		| sort -u | tail -1)" \
 		|| die "Could not parse list of tarballs"
 	# Strip quotes
 	CURRENT_STAGE3="${CURRENT_STAGE3:1:-1}"
+	[[ -n $CURRENT_STAGE3 ]] \
+		|| die "No stage3 tarball matching '$STAGE3_BASENAME_FINAL' was listed"
+	validate_stage3_freshness "$CURRENT_STAGE3" \
+		|| die "Refusing stale or invalid stage3 build '$CURRENT_STAGE3'"
 	# File to indiciate successful verification
 	CURRENT_STAGE3_VERIFIED="${CURRENT_STAGE3}.verified"
+	[[ ! -L $CURRENT_STAGE3 \
+		&& ! -L ${CURRENT_STAGE3}.DIGESTS \
+		&& ! -L $CURRENT_STAGE3_VERIFIED ]] \
+		|| die "Refusing symlink in cached stage3 state"
 
-	maybe_exec 'before_download_stage3' "$STAGE3_BASENAME_FINAL"
+	maybe_exec 'before_download_stage3' "$STAGE3_BASENAME_FINAL" \
+		|| die "Hook before_download_stage3 failed"
 
-	# Download file if not already downloaded
-	if [[ -e $CURRENT_STAGE3_VERIFIED ]]; then
-		einfo "$STAGE3_BASENAME_FINAL tarball already downloaded and verified"
+	# A marker permits use of the cached downloads, but never skips signature or
+	# checksum verification.  A forged or stale marker therefore cannot bless a
+	# modified archive.
+	if [[ -e $CURRENT_STAGE3_VERIFIED && -s $CURRENT_STAGE3 && -s "${CURRENT_STAGE3}.DIGESTS" ]]; then
+		einfo "$STAGE3_BASENAME_FINAL tarball already downloaded; re-verifying it"
 	else
 		einfo "Downloading $STAGE3_BASENAME_FINAL tarball"
-		download "$STAGE3_RELEASES/${CURRENT_STAGE3}" "${CURRENT_STAGE3}"
-		download "$STAGE3_RELEASES/${CURRENT_STAGE3}.DIGESTS" "${CURRENT_STAGE3}.DIGESTS"
-
-		# Import gentoo keys
-		einfo "Importing gentoo gpg key"
-		local GENTOO_GPG_KEY="$TMP_DIR/gentoo-keys.gpg"
-		download "https://gentoo.org/.well-known/openpgpkey/hu/wtktzo4gyuhzu8a4z5fdj3fgmr1u6tob?l=releng" "$GENTOO_GPG_KEY" \
-			|| die "Could not retrieve gentoo gpg key"
-		gpg --quiet --import < "$GENTOO_GPG_KEY" \
-			|| die "Could not import gentoo gpg key"
-
-		# Verify DIGESTS signature
-		einfo "Verifying tarball signature"
-		gpg --quiet --verify "${CURRENT_STAGE3}.DIGESTS" \
-			|| die "Signature of '${CURRENT_STAGE3}.DIGESTS' invalid!"
-
-		# Check hashes
-		einfo "Verifying tarball integrity"
-		# Replace any absolute paths in the digest file with just the stage3 basename, so it will be found by rhash
-		digest_line=$(grep 'tar.xz$' "${CURRENT_STAGE3}.DIGESTS" | sed -e 's/  .*stage3-/  stage3-/')
-		if type rhash &>/dev/null; then
-			rhash -P --check <(echo "# SHA512"; echo "$digest_line") \
-				|| die "Checksum mismatch!"
-		else
-			sha512sum --check <<< "$digest_line" \
-				|| die "Checksum mismatch!"
-		fi
-
-		# Create verification file in case the script is restarted
-		touch_or_die 0644 "$CURRENT_STAGE3_VERIFIED"
+		rm -f -- "$CURRENT_STAGE3_VERIFIED" \
+			|| die "Could not remove stale verification marker"
+		download "$STAGE3_RELEASES/${CURRENT_STAGE3}" "${CURRENT_STAGE3}" \
+			|| die "Could not download stage3 archive '$CURRENT_STAGE3'"
+		download "$STAGE3_RELEASES/${CURRENT_STAGE3}.DIGESTS" "${CURRENT_STAGE3}.DIGESTS" \
+			|| die "Could not download stage3 DIGESTS"
 	fi
+	# Run the post-download hook before verification so any accidental archive or
+	# DIGESTS modification is detected rather than blessed by the cache marker.
+	maybe_exec 'after_download_stage3' "${CURRENT_STAGE3}" \
+		|| die "Hook after_download_stage3 failed"
 
-	maybe_exec 'after_download_stage3' "${CURRENT_STAGE3}"
+	# Remove the marker before validation so an interrupted or failed validation
+	# cannot leave a success marker behind.
+	rm -f -- "$CURRENT_STAGE3_VERIFIED" \
+		|| die "Could not clear the verification marker"
+
+	einfo "Verifying Gentoo release signature"
+	local verified_digests
+	verified_digests="$(mktemp "${TMP_DIR%/}/verified-digests.XXXXXXXX")" \
+		|| die "Could not create temporary file for verified stage3 digests"
+	rm -f -- "$verified_digests" \
+		|| die "Could not prepare temporary file for verified stage3 digests"
+	if ! verify_gentoo_release_signature "${CURRENT_STAGE3}.DIGESTS" > "$verified_digests"; then
+		rm -f -- "$verified_digests"
+		die "Signature of '${CURRENT_STAGE3}.DIGESTS' is not from a trusted Gentoo release key"
+	fi
+	chmod 0600 -- "$verified_digests" \
+		|| { rm -f -- "$verified_digests"; die "Could not protect verified stage3 digests"; }
+
+	einfo "Verifying stage3 SHA512 checksum"
+	if ! verify_stage3_sha512 "$CURRENT_STAGE3" "$verified_digests"; then
+		rm -f -- "$verified_digests"
+		die "Checksum mismatch for '$CURRENT_STAGE3'"
+	fi
+	rm -f -- "$verified_digests" \
+		|| die "Could not remove temporary verified stage3 digests"
+
+	# Record success for restart/download caching only.  Future runs still verify.
+	touch_or_die 0644 "$CURRENT_STAGE3_VERIFIED"
+
 }
 
 function extract_stage3() {
@@ -900,7 +1472,8 @@ function extract_stage3() {
 	[[ -e "$TMP_DIR/$CURRENT_STAGE3" ]] \
 		|| die "stage3 file does not exist"
 
-	maybe_exec 'before_extract_stage3' "$TMP_DIR/$CURRENT_STAGE3" "$ROOT_MOUNTPOINT"
+	maybe_exec 'before_extract_stage3' "$TMP_DIR/$CURRENT_STAGE3" "$ROOT_MOUNTPOINT" \
+		|| die "Hook before_extract_stage3 failed"
 
 	# Go to root directory
 	cd "$ROOT_MOUNTPOINT" \
@@ -917,13 +1490,65 @@ function extract_stage3() {
 	cd "$TMP_DIR" \
 		|| die "Could not cd into '$TMP_DIR'"
 
-	maybe_exec 'after_extract_stage3' "$TMP_DIR/$CURRENT_STAGE3" "$ROOT_MOUNTPOINT"
+	maybe_exec 'after_extract_stage3' "$TMP_DIR/$CURRENT_STAGE3" "$ROOT_MOUNTPOINT" \
+		|| die "Hook after_extract_stage3 failed"
+}
+
+function persist_luks_header_backups() {
+	[[ $USED_LUKS == true ]] || return 0
+
+	local headers=("${INSTALLER_CREATED_LUKS_HEADERS[@]}")
+	[[ ${#headers[@]} -gt 0 ]] \
+		|| die "LUKS was used, but no generated header backups were found"
+
+	local target_dir="$ROOT_MOUNTPOINT$LUKS_HEADER_TARGET_DIR"
+	[[ ! -L $target_dir ]] \
+		|| die "Refusing symlink target LUKS header directory '$target_dir'"
+	install -d -m 0700 -o root -g root -- "$target_dir" \
+		|| die "Could not create target LUKS header directory '$target_dir'"
+
+	local header destination owner mode
+	for header in "${headers[@]}"; do
+		destination="$target_dir/$(basename "$header")"
+		[[ ! -L $destination ]] \
+			|| die "Refusing symlink target LUKS header file '$destination'"
+		install -m 0400 -o root -g root -- "$header" "$destination" \
+			|| die "Could not persist LUKS header backup '$destination'"
+		read -r owner mode < <(stat -Lc '%u %a' -- "$destination") \
+			|| die "Could not verify persisted LUKS header '$destination'"
+		[[ $owner == 0 && $mode == 400 ]] \
+			|| die "Persisted LUKS header '$destination' is not root-owned mode 0400"
+	done
+
+	ewarn "LUKS headers were copied to '$LUKS_HEADER_TARGET_DIR' in the target system. This is not an independent recovery copy because it is stored behind the encrypted container."
+
+	# Revalidate immediately before copying in case removable storage was
+	# detached or the path was replaced after the pre-disk check.
+	validate_luks_header_export_destination
+	[[ ${LUKS_HEADER_EXPORT_READY:-false} == true ]] || return 0
+	local export_complete=true
+	for header in "${headers[@]}"; do
+		destination="$LUKS_HEADER_EXPORT_DIR/$(basename "$header")"
+		if [[ -L $destination ]] \
+			|| ! install -m 0400 -- "$header" "$destination"; then
+			if [[ $REQUIRE_LUKS_HEADER_EXPORT == true ]]; then
+				die "Required external LUKS header export failed for '$destination'"
+			fi
+			ewarn "Could not export optional LUKS header backup to '$destination'"
+			export_complete=false
+			continue
+		fi
+	done
+	[[ $export_complete == false ]] \
+		|| einfo "Exported LUKS header backups to host directory '$LUKS_HEADER_EXPORT_DIR'"
 }
 
 function gentoo_umount() {
 	if mountpoint -q -- "$ROOT_MOUNTPOINT"; then
 		einfo "Unmounting root filesystem"
-		umount -R -l "$ROOT_MOUNTPOINT" \
+		# Do not use lazy unmount before destructive validation: a detached but
+		# still-busy mount could disappear from lsblk and then be formatted.
+		umount -R -- "$ROOT_MOUNTPOINT" \
 			|| die "Could not unmount filesystems"
 	fi
 }
@@ -943,33 +1568,31 @@ function env_update() {
 }
 
 function mkdir_or_die() {
-	# shellcheck disable=SC2174
-	mkdir -m "$1" -p "$2" \
+	install -d -m "$1" -- "$2" \
 		|| die "Could not create directory '$2'"
 }
 
 function touch_or_die() {
 	touch "$2" \
 		|| die "Could not touch '$2'"
-	chmod "$1" "$2"
+	chmod "$1" "$2" \
+		|| die "Could not set permissions on '$2'"
 }
 
 # $1: root directory
 # $@: command...
 function gentoo_chroot() {
 	if [[ $# -eq 1 ]]; then
-		einfo "To later unmount all virtual filesystems, simply use umount -l ${1@Q}"
 		gentoo_chroot "$1" /bin/bash --init-file <(echo 'init_bash')
+		return $?
 	fi
 
-	[[ ${EXECUTED_IN_CHROOT-false} == "false" ]] \
+	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] \
 		|| die "Already in chroot"
 
 	local chroot_dir="$1"
 	shift
-
-	# Bind repo directory to tmp
-	bind_repo_dir
+	local created_mount_start=${#INSTALLER_CREATED_MOUNTS[@]}
 
 	# Copy resolv.conf
 	einfo "Preparing chroot environment"
@@ -978,38 +1601,54 @@ function gentoo_chroot() {
 
 	# Mount virtual filesystems
 	einfo "Mounting virtual filesystems"
-	(
-		mountpoint -q -- "$chroot_dir/proc" || mount -t proc /proc "$chroot_dir/proc" || exit 1
-		mountpoint -q -- "$chroot_dir/run"  || {
-			mount --rbind /run  "$chroot_dir/run" &&
-			mount --make-rslave "$chroot_dir/run"; } || exit 1
-		mountpoint -q -- "$chroot_dir/tmp"  || {
-			mount --rbind /tmp  "$chroot_dir/tmp" &&
-			mount --make-rslave "$chroot_dir/tmp"; } || exit 1
-		mountpoint -q -- "$chroot_dir/sys"  || {
-			mount --rbind /sys  "$chroot_dir/sys" &&
-			mount --make-rslave "$chroot_dir/sys"; } || exit 1
-		mountpoint -q -- "$chroot_dir/dev"  || {
-			mount --rbind /dev  "$chroot_dir/dev" &&
-			mount --make-rslave "$chroot_dir/dev"; } || exit 1
-	) || die "Could not mount virtual filesystems"
+	if ! mountpoint -q -- "$chroot_dir/proc"; then
+		mount -t proc /proc "$chroot_dir/proc" \
+			|| die "Could not mount proc in '$chroot_dir'"
+		record_installer_created_mount "$chroot_dir/proc"
+	fi
+	local virtual_source virtual_target
+	for virtual_source in /run /sys /dev; do
+		virtual_target="$chroot_dir$virtual_source"
+		mountpoint -q -- "$virtual_target" && continue
+		mount --rbind "$virtual_source" "$virtual_target" \
+			|| die "Could not bind mount '$virtual_source' in '$chroot_dir'"
+		record_installer_created_mount "$virtual_target"
+		mount --make-rslave "$virtual_target" \
+			|| die "Could not make '$virtual_target' a slave mount"
+	done
+
+	# Mount this after preparing /tmp so an rbind of the parent cannot hide the
+	# repository mount. This also works when the target already has its own /tmp.
+	prepare_chroot_installer_tmp_dir "$chroot_dir"
+	bind_installer_uuid_storage "$chroot_dir"
+	bind_repo_dir "$chroot_dir"
 
 	# Cache lsblk output, because it doesn't work correctly in chroot (returns almost no info for devices, e.g. empty uuids)
 	cache_lsblk_output
 
 	# Execute command
 	einfo "Chrooting..."
+	local chroot_status
 	EXECUTED_IN_CHROOT=true \
 		TMP_DIR="$TMP_DIR" \
 		CACHED_LSBLK_OUTPUT="$CACHED_LSBLK_OUTPUT" \
-		exec chroot -- "$chroot_dir" "$GENTOO_INSTALL_REPO_DIR/scripts/dispatch_chroot.sh" "$@" \
-			|| die "Failed to chroot into '$chroot_dir'."
+		chroot -- "$chroot_dir" "$GENTOO_INSTALL_REPO_DIR/scripts/dispatch_chroot.sh" "$@"
+	chroot_status=$?
+	[[ $chroot_status -eq 0 ]] \
+		|| eerror "Command in chroot '$chroot_dir' failed with status $chroot_status"
+	# Only tear down mounts created for this chroot invocation. Root, boot, and
+	# efivar mounts established by the installation remain available for repair.
+	if ! cleanup_installer_mounts_from "$created_mount_start"; then
+		[[ $chroot_status -ne 0 ]] \
+			|| chroot_status=1
+	fi
+	return "$chroot_status"
 }
 
 function enable_service() {
 	if [[ $SYSTEMD == "true" ]]; then
-		try systemctl enable "$1"
+		try_fatal systemctl enable "$1"
 	else
-		try rc-update add "$1" default
+		try_fatal rc-update add "$1" default
 	fi
 }

@@ -113,6 +113,16 @@ function disk_configuration() {
 
 
 ################################################
+# Bootloader configuration
+
+# Bootloader to install:
+#   "grub"         - GRUB. Supported by this installer for EFI installs.
+#   "limine"       - Limine. Supported by this installer for EFI and BIOS installs.
+#   "systemd-boot" - systemd-boot. EFI only.
+BOOTLOADER=grub
+
+
+################################################
 # LUKS/ZFS encryption configuration
 
 # If you have selected a disk layout that uses encryption with LUKS or ZFS,
@@ -177,6 +187,16 @@ function disk_configuration() {
 # You can also just set the variable here, but this is not recommended because
 # depending on your current environment, this file might be stored on an actual disk,
 # and so your password would be written to that disk at least once.
+
+# LUKS headers are always copied into /root/luks-header-backups in the target
+# system with mode 0400. That copy is not independent recovery: if the on-disk
+# LUKS header is damaged, the encrypted target root cannot be opened to read it.
+# Set this to an existing host directory (ideally mounted removable storage) to
+# export an independent copy. The installer never creates this directory.
+LUKS_HEADER_EXPORT_DIR=""
+# Fail before disk changes if the export destination is unavailable, and fail
+# the installation if the later copy cannot be completed.
+REQUIRE_LUKS_HEADER_EXPORT=false
 
 ################################################
 # System configuration
@@ -260,6 +280,10 @@ GENTOO_ARCH="amd64"
 # The sub-architecture for x86 targets (e.g., i486, i686)
 GENTOO_SUBARCH=""
 
+# Reject signed but replayed stage3 builds older than this many days. Set to 0
+# only for an intentional offline/archive installation.
+MAX_STAGE3_AGE_DAYS=45
+
 # The stage3 tarball variant to use. Determines whether systemd
 # or OpenRC is used based on whether "systemd" is contained in this string.
 STAGE3_VARIANT="systemd"
@@ -310,7 +334,6 @@ KERNEL_TYPE=bin
 # This variable will become the content of the authorized_keys file,
 # so you may specify one key per line (include the newlines in the variable).
 ROOT_SSH_AUTHORIZED_KEYS=""
-
 
 ################################################
 # Prove that you have read the config
