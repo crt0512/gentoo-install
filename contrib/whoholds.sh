@@ -3,15 +3,37 @@
 D="${1:?usage: whoholds.sh /dev/DEVICE}"
 R="$(realpath -e -- "$D")" || exit 1
 N="${R##*/}"
+MM="$(lsblk --nodeps --noheadings --output MAJ:MIN -- "$R" | tr -d '[:space:]')"
+MAJ="${MM%%:*}"
+MIN="${MM##*:}"
+# st_dev as stat reports it, so a file can be matched against this partition
+DEVNUM=$(( (MAJ << 8) | (MIN & 255) | ((MIN & ~255) << 12) ))
 
 echo "=== device ==="
 lsblk -o NAME,MAJ:MIN,FSTYPE,LABEL,MOUNTPOINTS "$R"
-echo "=== mounts ==="
-grep -F -- "$N" /proc/mounts || echo "(none)"
+echo "device number: $MM"
+
+# A mount records the path it was given, and only its own namespace lists it, so match the device number everywhere
+echo "=== mounts of $MM in every mount namespace ==="
+found=0
+declare -A seen=()
+for mi in /proc/[0-9]*/mountinfo; do
+	grep -q " $MM " "$mi" 2>/dev/null || continue
+	p="${mi#/proc/}"; p="${p%%/*}"
+	ns="$(readlink -- "/proc/$p/ns/mnt" 2>/dev/null)" || ns="unknown"
+	[[ -v seen[$ns] ]] && continue
+	seen[$ns]=true
+	found=1
+	echo "pid $p [$ns] $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
+	grep " $MM " "$mi" | sed 's/^/    /'
+done
+[[ $found == 1 ]] || echo "(none)"
+
 echo "=== swaps ==="
 grep -F -- "$N" /proc/swaps || echo "(none)"
 echo "=== stacked devices (dm/md) ==="
 ls -1 "/sys/class/block/$N/holders/" 2>/dev/null || echo "(none)"
+
 echo "=== processes holding it open ==="
 found=0
 for f in /proc/[0-9]*/fd/*; do
@@ -22,13 +44,38 @@ for f in /proc/[0-9]*/fd/*; do
 	found=1
 done
 [[ $found == 1 ]] || echo "(none)"
+
+# A lazy unmount detaches the tree but keeps the superblock alive while anything still references it
+echo "=== processes with a cwd, root or open file on device $MM ==="
+found=0
+for p in /proc/[0-9]*; do
+	pid="${p#/proc/}"
+	hit=""
+	for link in cwd root exe; do
+		t="$(stat -c '%d' -L "$p/$link" 2>/dev/null)" || continue
+		[[ $t == "$DEVNUM" ]] && hit="$hit $link"
+	done
+	for f in "$p"/fd/*; do
+		t="$(stat -c '%d' -L "$f" 2>/dev/null)" || continue
+		[[ $t == "$DEVNUM" ]] && { hit="$hit fd:${f##*/}"; break; }
+	done
+	[[ -n $hit ]] || continue
+	echo "pid $pid ($(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)) ->$hit"
+	found=1
+done
+[[ $found == 1 ]] || echo "(none)"
+
+echo "=== mount namespaces on this system ==="
+command -v lsns >/dev/null 2>&1 && lsns -t mnt || echo "(lsns not available)"
+
 echo "=== btrfs ==="
 btrfs filesystem show 2>&1
 echo "--- forget ---"
 btrfs device scan --forget "$R" 2>&1; echo "forget exit: $?"
+
 echo "=== exclusive open probe ==="
-if dd if=/dev/null of="$R" count=0 conv=nocreat,notrunc oflag=excl 2>&1; then
+if python3 -c 'import os, sys; os.close(os.open(sys.argv[1], os.O_WRONLY | os.O_EXCL))' "$R" 2>&1; then
 	echo "RESULT: device is FREE"
 else
-	echo "RESULT: device is BUSY"
+	echo "RESULT: device is BUSY (something holds it exclusively)"
 fi

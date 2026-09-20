@@ -307,6 +307,23 @@ function unrecord_installer_created_mount() {
 	INSTALLER_CREATED_MOUNTS=("${remaining_mounts[@]}")
 }
 
+# A lazy unmount detaches the tree but keeps the filesystem open, which blocks every later mkfs on that device
+function unmount_recursively() {
+	local path="$1"
+	umount -R -- "$path" 2>/dev/null \
+		&& return 0
+
+	sync
+	command -v udevadm >/dev/null 2>&1 \
+		&& udevadm settle --timeout=10 &>/dev/null
+	umount -R -- "$path" \
+		&& return 0
+
+	ewarn "Could not unmount '$path' cleanly, falling back to a lazy unmount"
+	ewarn "Its filesystems stay open until every reference is gone, which can require a reboot before the devices are usable again"
+	umount -R -l -- "$path"
+}
+
 # Best-effort and idempotent: this function is called from EXIT handling, where
 # preserving the original failure status matters more than a secondary error.
 function cleanup_installer_mounts() {
@@ -314,7 +331,7 @@ function cleanup_installer_mounts() {
 		&& command -v mountpoint >/dev/null 2>&1 \
 		&& mountpoint -q -- "$ROOT_MOUNTPOINT"; then
 		einfo "Cleaning target filesystems below '$ROOT_MOUNTPOINT'"
-		umount -R -l -- "$ROOT_MOUNTPOINT" \
+		unmount_recursively "$ROOT_MOUNTPOINT" \
 			|| ewarn "Could not fully unmount target filesystems below '$ROOT_MOUNTPOINT'"
 	fi
 	cleanup_installer_mounts_from 0
@@ -332,7 +349,7 @@ function cleanup_installer_mounts_from() {
 		command -v mountpoint >/dev/null 2>&1 || continue
 		if mountpoint -q -- "$mount_path"; then
 			einfo "Cleaning installer-created mount '$mount_path'"
-			if ! umount -R -l -- "$mount_path"; then
+			if ! unmount_recursively "$mount_path"; then
 				ewarn "Could not unmount installer-created mount '$mount_path'"
 				cleanup_status=1
 				continue
@@ -830,14 +847,11 @@ function release_device_claims() {
 
 # Probes the exclusive open that mkfs and cryptsetup need, without writing anything
 function device_is_free() {
-	local output
-	output="$(dd if=/dev/null of="$1" count=0 conv=nocreat,notrunc oflag=excl 2>&1)" \
-		&& return 0
-
-	# An unsupported dd flag must not be reported as a busy device
-	[[ $output != *invalid* ]] \
+	# Without python3 the probe is skipped, the format itself still reports a busy device
+	command -v python3 >/dev/null 2>&1 \
 		|| return 0
-	return 1
+
+	python3 -c 'import os, sys; os.close(os.open(sys.argv[1], os.O_WRONLY | os.O_EXCL))' "$1" &>/dev/null
 }
 
 # Prints whatever still claims a device, since an exclusive open fails while any of this exists
@@ -848,11 +862,29 @@ function report_device_holders() {
 		|| real="$device"
 	local name="${real##*/}"
 	local line
+	local devno
+	devno="$(lsblk --nodeps --noheadings --output MAJ:MIN -- "$real" 2>/dev/null | tr -d '[:space:]')"
 
-	while read -r line; do
-		[[ -z $line ]] \
-			|| eerror "  mounted: $line"
-	done < <(grep -F -- "$name" /proc/mounts 2>/dev/null)
+	# A mount records the path it was given, and only its own namespace lists it, so match the device number everywhere
+	local -A seen_namespaces=()
+	local mountinfo pid namespace
+	for mountinfo in /proc/[0-9]*/mountinfo; do
+		[[ -n $devno ]] \
+			|| break
+		grep -q " $devno " "$mountinfo" 2>/dev/null \
+			|| continue
+		pid="${mountinfo#/proc/}"
+		pid="${pid%%/*}"
+		namespace="$(readlink -- "/proc/$pid/ns/mnt" 2>/dev/null)" \
+			|| namespace="unknown"
+		[[ -v seen_namespaces[$namespace] ]] \
+			&& continue
+		seen_namespaces[$namespace]=true
+		eerror "  mounted in the namespace of pid $pid ($(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)):"
+		while read -r line; do
+			eerror "    $line"
+		done < <(grep " $devno " "$mountinfo" 2>/dev/null)
+	done
 
 	while read -r line; do
 		[[ -z $line ]] \
