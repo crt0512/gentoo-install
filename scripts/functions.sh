@@ -808,18 +808,78 @@ function init_btrfs() {
 	unrecord_installer_created_mount /btrfs
 }
 
-# The kernel holds every scanned btrfs device open, so mkfs on a reused partition fails with EBUSY
+# Drops stale claims on a device, a registered btrfs keeps it open and makes mkfs fail with EBUSY
 function release_device_claims() {
 	local device
-	if command -v btrfs >/dev/null 2>&1; then
-		for device in "$@"; do
-			btrfs device scan --forget "$device" &>/dev/null
-		done
-	fi
+	local output
+	for device in "$@"; do
+		swapoff "$device" &>/dev/null
+		if command -v btrfs >/dev/null 2>&1; then
+			if output="$(btrfs device scan --forget "$device" 2>&1)"; then
+				elog "Released stale btrfs registration for '$device'"
+			elif [[ -n $output ]]; then
+				elog "btrfs device scan --forget '$device': $output"
+			fi
+		fi
+	done
 
 	command -v udevadm >/dev/null 2>&1 \
 		&& udevadm settle --timeout=10 &>/dev/null
 	return 0
+}
+
+# Probes the exclusive open that mkfs and cryptsetup need, without writing anything
+function device_is_free() {
+	local output
+	output="$(dd if=/dev/null of="$1" count=0 conv=nocreat,notrunc oflag=excl 2>&1)" \
+		&& return 0
+
+	# An unsupported dd flag must not be reported as a busy device
+	[[ $output != *invalid* ]] \
+		|| return 0
+	return 1
+}
+
+# Prints whatever still claims a device, since an exclusive open fails while any of this exists
+function report_device_holders() {
+	local device="$1"
+	local real
+	real="$(realpath -e -- "$device" 2>/dev/null)" \
+		|| real="$device"
+	local name="${real##*/}"
+	local line
+
+	while read -r line; do
+		[[ -z $line ]] \
+			|| eerror "  mounted: $line"
+	done < <(grep -F -- "$name" /proc/mounts 2>/dev/null)
+
+	while read -r line; do
+		[[ -z $line ]] \
+			|| eerror "  swap: $line"
+	done < <(grep -F -- "$name" /proc/swaps 2>/dev/null)
+
+	local holder
+	for holder in "/sys/class/block/$name/holders"/*; do
+		[[ -e $holder ]] \
+			&& eerror "  stacked device: ${holder##*/}"
+	done
+
+	local fd pid
+	for fd in /proc/[0-9]*/fd/*; do
+		[[ "$(readlink -- "$fd" 2>/dev/null)" == "$real" ]] \
+			|| continue
+		pid="${fd#/proc/}"
+		pid="${pid%%/*}"
+		eerror "  opened by pid $pid: $(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+	done
+
+	if command -v btrfs >/dev/null 2>&1; then
+		while read -r line; do
+			[[ -z $line ]] \
+				|| eerror "  btrfs: $line"
+		done < <(btrfs filesystem show "$real" 2>&1)
+	fi
 }
 
 function disk_format() {
@@ -837,6 +897,10 @@ function disk_format() {
 
 	einfo "Formatting $device ($id) with $type"
 	release_device_claims "$device"
+	if ! device_is_free "$device"; then
+		eerror "Something still holds '$device' ($id), formatting it will most likely fail:"
+		report_device_holders "$device"
+	fi
 	wipefs --quiet --all --force "$device" \
 		|| die "Could not erase previous file system signatures from '$device' ($id)"
 
@@ -1236,6 +1300,28 @@ function adopt_detected_partition_uuids() {
 	done
 }
 
+# Reused partitions must be claimable, otherwise every mkfs and cryptsetup on them fails with EBUSY
+function detected_partitions_are_free() {
+	local id
+	local device
+	for id in "${!DISK_DETECTED_UUIDS[@]}"; do
+		[[ ${DISK_ID_TO_RESOLVABLE[$id]} == partuuid:* ]] \
+			|| continue
+
+		device="/dev/disk/by-partuuid/${DISK_DETECTED_UUIDS[$id]}"
+		[[ -e $device ]] \
+			|| return 1
+		release_device_claims "$device"
+		if ! device_is_free "$device"; then
+			eerror "Partition '$(realpath -e -- "$device" 2>/dev/null || echo "$device")' ($id) is still in use:"
+			report_device_holders "$device"
+			return 1
+		fi
+	done
+
+	return 0
+}
+
 # Offers to keep an existing partition table which already matches the configuration
 function maybe_reuse_existing_partitions() {
 	[[ ${DETECT_EXISTING_PARTITIONS:-true} == "true" ]] \
@@ -1244,6 +1330,12 @@ function maybe_reuse_existing_partitions() {
 	einfo "Checking whether the disks are already partitioned as configured"
 	if ! detect_existing_partition_layout; then
 		elog "The existing partitions do not match the configuration, the disks will be partitioned from scratch."
+		return 0
+	fi
+
+	if ! detected_partitions_are_free; then
+		ewarn "The existing partitions match, but they cannot be claimed exclusively."
+		ewarn "They will be repartitioned instead, which also releases whatever holds them."
 		return 0
 	fi
 
