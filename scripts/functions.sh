@@ -704,6 +704,7 @@ function disk_create_raid() {
 
 # See https://serverfault.com/questions/1163715/mdadm-value-arch12021-cannot-be-set-as-devname-reason-not-posix-compatible
 	# Reused partitions can still carry a raid superblock, which would make mdadm ask for confirmation
+	release_device_claims "${devices[@]}"
 	wipefs --quiet --all --force "${devices[@]}" \
 		|| die "Could not erase previous file system signatures from $devices_desc"
 
@@ -747,6 +748,7 @@ function disk_create_luks() {
 	local uuid="${DISK_ID_TO_UUID[$new_id]}"
 
 	einfo "Creating luks ($new_id) on $device_desc"
+	release_device_claims "$device"
 	cryptsetup luksFormat \
 			--type luks2 \
 			--uuid "$uuid" \
@@ -806,6 +808,20 @@ function init_btrfs() {
 	unrecord_installer_created_mount /btrfs
 }
 
+# The kernel holds every scanned btrfs device open, so mkfs on a reused partition fails with EBUSY
+function release_device_claims() {
+	local device
+	if command -v btrfs >/dev/null 2>&1; then
+		for device in "$@"; do
+			btrfs device scan --forget "$device" &>/dev/null
+		done
+	fi
+
+	command -v udevadm >/dev/null 2>&1 \
+		&& udevadm settle --timeout=10 &>/dev/null
+	return 0
+}
+
 function disk_format() {
 	local id="${arguments[id]}"
 	local type="${arguments[type]}"
@@ -820,6 +836,7 @@ function disk_format() {
 		|| die "Could not resolve device with id=$id"
 
 	einfo "Formatting $device ($id) with $type"
+	release_device_claims "$device"
 	wipefs --quiet --all --force "$device" \
 		|| die "Could not erase previous file system signatures from '$device' ($id)"
 
@@ -954,6 +971,7 @@ function disk_format_zfs() {
 	done
 	devices_desc="${devices_desc:0:-2}"
 
+	release_device_claims "${devices[@]}"
 	wipefs --quiet --all --force "${devices[@]}" \
 		|| die "Could not erase previous file system signatures from $devices_desc"
 
@@ -997,6 +1015,7 @@ function disk_format_btrfs() {
 	done
 	devices_desc="${devices_desc:0:-2}"
 
+	release_device_claims "${devices[@]}"
 	wipefs --quiet --all --force "${devices[@]}" \
 		|| die "Could not erase previous file system signatures from $devices_desc"
 
