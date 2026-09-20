@@ -241,6 +241,11 @@ PARTITIONING_ZFS_POOL_TYPES=("standard" "custom")
 PARTITIONING_ZFS_COMPRESSIONS=("on" "gzip" "lz4" "lzjb" "zle" "zstd" "zstd-fast")
 
 PORTAGE_SYNC_TYPES=("git" "rsync")
+ALL_CPU_MICROARCHS=(
+	"auto"       "auto       | Use x86-64-v3 if this cpu supports it"
+	"x86-64"     "x86-64     | Baseline, runs on any amd64 cpu"
+	"x86-64-v3"  "x86-64-v3  | Force, needs AVX2/BMI2/FMA"
+)
 KERNEL_TYPES=(
 	"bin"    "bin    | Pre-built binary kernel (gentoo-kernel-bin)"
 	"source" "source | Build kernel from source (gentoo-kernel)"
@@ -473,6 +478,7 @@ function load_default_config() {
 	ENABLE_SSHD=true
 	ENABLE_BINPKG=false
 	KERNEL_TYPE=bin
+	CPU_MICROARCH="auto"
 	BOOTLOADER="$DEFAULT_BOOTLOADER"
 	ROOT_SSH_AUTHORIZED_KEYS=""
 	CREATE_USER=""
@@ -941,6 +947,7 @@ MENU_ITEMS=(
 	"--------"
 	"ENABLE_SSHD"
 	"ENABLE_BINPKG"
+	"CPU_MICROARCH"
 	"KERNEL_TYPE"
 	"ROOT_SSH_AUTHORIZED_KEYS"
 	"CREATE_USER"
@@ -1732,6 +1739,25 @@ function ENABLE_BINPKG_menu()  {
 	UNSAVED_CHANGES=true
 }
 
+function CPU_MICROARCH_tag()   { echo " └ Microarch level"; }
+function CPU_MICROARCH_label() { echo " └ ($CPU_MICROARCH)"; }
+function CPU_MICROARCH_show()  { [[ "$GENTOO_ARCH" == "amd64" ]]; }
+function CPU_MICROARCH_help()  { echo "Microarchitecture level to build packages for. 'auto' uses x86-64-v3 when this cpu supports it (AVX2, BMI2, FMA and friends) and falls back to the baseline otherwise. With binary packages enabled, the x86-64-v3 binhost is preferred and the baseline binhost stays configured as a fallback for packages which have no v3 build."; }
+function CPU_MICROARCH_menu()  {
+	if menu_radiolist_labeled \
+		"Select microarchitecture level" \
+		"Select which microarchitecture level packages are built and fetched for. 'auto' detects x86-64-v3 support on this machine, which is what the handbook recommends when the cpu supports it." \
+		"$CPU_MICROARCH" \
+		"${ALL_CPU_MICROARCHS[@]}"
+	then
+		CPU_MICROARCH="$dialog_out"
+		UNSAVED_CHANGES=true
+	else
+		# Return to menu
+		true
+	fi
+}
+
 function KERNEL_TYPE_tag()   { echo "Kernel type"; }
 function KERNEL_TYPE_label() { echo "($KERNEL_TYPE)"; }
 function KERNEL_TYPE_show()  { return 0; }
@@ -1866,6 +1892,7 @@ ADDITIONAL_PACKAGES=(${ADDITIONAL_PACKAGES[@]@Q})
 ENABLE_SSHD=${ENABLE_SSHD@Q}
 ENABLE_BINPKG=${ENABLE_BINPKG@Q}
 KERNEL_TYPE=${KERNEL_TYPE@Q}
+CPU_MICROARCH=${CPU_MICROARCH@Q}
 BOOTLOADER=${BOOTLOADER@Q}
 ROOT_SSH_AUTHORIZED_KEYS=${ROOT_SSH_AUTHORIZED_KEYS@Q}
 CREATE_USER=${CREATE_USER@Q}

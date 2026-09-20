@@ -122,6 +122,22 @@ it, set `SELECT_MIRRORS_COUNTRY` to a country name from the gentoo mirror list (
 `"Switzerland"`) so only the mirrors hosted there are tested. The installer falls back to the
 full list if that country has no usable mirror.
 
+### (Optional) Microarchitecture level
+
+`CPU_MICROARCH` selects which x86-64 microarchitecture level packages are built and fetched for.
+The default `auto` checks whether this machine supports `x86-64-v3` (AVX2, BMI2, FMA and the rest
+of the level) and uses it if so, which is what the handbook recommends for capable hardware. It
+falls back to the baseline `x86-64` otherwise, and you can pin either level explicitly.
+
+Detection asks the dynamic loader first (`ld.so --help` reports the supported hwcaps levels) and
+falls back to parsing the cpu flags. When the level resolves to `x86-64-v3`, `-march=x86-64-v3`
+is added to `COMMON_FLAGS`, and with `ENABLE_BINPKG=true` the `x86-64-v3` binhost is added at a
+higher priority than the baseline one. The baseline binhost stays configured, so packages which
+have no v3 build are still fetched as binaries instead of being compiled.
+
+Note that Gentoo publishes no v3 *stage3*, only v3 binary packages — the system is always
+bootstrapped from a baseline stage3 and moves to v3 from there.
+
 ### (Optional) Additional packages
 
 You can add any amount of additional packages to be installed on the target system.

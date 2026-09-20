@@ -105,6 +105,67 @@ function select_mirrors_in_country() {
 	fi
 }
 
+# Builds locally compiled packages for the detected microarchitecture level
+function configure_make_conf_microarch() {
+	local march="$1"
+	local make_conf=/etc/portage/make.conf
+
+	if grep -q '^COMMON_FLAGS=.*-march=' "$make_conf" 2>/dev/null; then
+		ewarn "COMMON_FLAGS already sets -march, leaving it untouched"
+		return 0
+	fi
+
+	if grep -q '^COMMON_FLAGS="' "$make_conf" 2>/dev/null; then
+		sed -i "s|^COMMON_FLAGS=\"|COMMON_FLAGS=\"-march=$march |" "$make_conf" \
+			|| die "Could not add -march=$march to COMMON_FLAGS"
+	else
+		printf 'COMMON_FLAGS="-march=%s -O2 -pipe"\n' "$march" >> "$make_conf" \
+			|| die "Could not add COMMON_FLAGS to '$make_conf'"
+	fi
+	einfo "Building packages with -march=$march"
+}
+
+# Prefers the v3 binhost, the baseline one stays as a fallback for packages without a v3 build
+function configure_binpkg_microarch() {
+	local march="$1"
+	local conf_dir=/etc/portage/binrepos.conf
+	local -a conf_files=()
+
+	if [[ -d $conf_dir ]]; then
+		shopt -s nullglob
+		conf_files=("$conf_dir"/*.conf)
+		shopt -u nullglob
+	elif [[ -f $conf_dir ]]; then
+		conf_files=("$conf_dir")
+	fi
+
+	if [[ ${#conf_files[@]} -eq 0 ]]; then
+		ewarn "No binhost configuration found, cannot add the $march binhost"
+		return 0
+	fi
+	if grep -q -- "$march" "${conf_files[@]}" 2>/dev/null; then
+		einfo "The $march binhost is already configured"
+		return 0
+	fi
+
+	local baseline_uri
+	baseline_uri="$(sed -nE 's|^[[:space:]]*sync-uri[[:space:]]*=[[:space:]]*(.*/x86-64)/?[[:space:]]*$|\1|p' "${conf_files[@]}" | head -n1)"
+	if [[ -z $baseline_uri ]]; then
+		ewarn "Could not derive the $march binhost from the existing binhost configuration"
+		return 0
+	fi
+
+	# A higher priority than the shipped binhost, which keeps the baseline one as a fallback
+	local target="$conf_dir/gentoo-$march.conf"
+	[[ -d $conf_dir ]] \
+		|| target="$conf_dir"
+	printf '\n[gentoobinhost-%s]\npriority = 10000\nsync-uri = %s-v3/\n' "$march" "$baseline_uri" >> "$target" \
+		|| die "Could not write the $march binhost to '$target'"
+	chmod 644 "$target" \
+		|| die "Could not set permissions on '$target'"
+	einfo "Preferring the $march binhost, $baseline_uri/ stays as a fallback"
+}
+
 function configure_portage() {
 	# Prepare /etc/portage for autounmask
 	mkdir_or_die 0755 "/etc/portage/package.use"
@@ -128,7 +189,18 @@ function configure_portage() {
 		fi
 	fi
 
+	local march
+	march="$(resolve_cpu_microarch)" \
+		|| die "Could not determine the microarchitecture level"
+	if [[ $march == "x86-64-v3" ]]; then
+		configure_make_conf_microarch "$march"
+	else
+		einfo "Building packages for the baseline x86-64 microarchitecture level"
+	fi
+
 	if [[ $ENABLE_BINPKG == "true" ]]; then
+		[[ $march == "x86-64" ]] \
+			|| configure_binpkg_microarch "$march"
 		echo 'FEATURES="getbinpkg binpkg-request-signature"' >> /etc/portage/make.conf \
 			|| die "Could not enable verified binary packages"
 		getuto \

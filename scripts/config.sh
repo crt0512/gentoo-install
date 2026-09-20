@@ -73,6 +73,8 @@ ENABLE_SSHD=false
 ENABLE_BINPKG=false
 KERNEL_TYPE=bin
 BOOTLOADER=""
+# Microarchitecture level for compiler flags and binary packages: auto, x86-64 or x86-64-v3
+CPU_MICROARCH="auto"
 ROOT_SSH_AUTHORIZED_KEYS=""
 
 # Name of an unprivileged user to create, or empty to create none

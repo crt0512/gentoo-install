@@ -78,6 +78,57 @@ function check_required_config_variables() {
 		|| die "Your configuration does not define: ${missing[*]}. Compare it against gentoo.conf.example or regenerate it with ./configure."
 }
 
+# True when this cpu supports every feature of the x86-64-v3 microarchitecture level
+function cpu_supports_x86_64_v3() {
+	local loader output
+	for loader in /lib64/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2; do
+		[[ -x $loader ]] \
+			|| continue
+		output="$("$loader" --help 2>/dev/null)" \
+			|| continue
+		# Only trust the loader when it really reports the hwcaps levels
+		[[ $output == *x86-64-v2* ]] \
+			|| continue
+		[[ $output == *"x86-64-v3 (supported"* ]]
+		return
+	done
+
+	# Older loaders do not report hwcaps, so check the cpu flags themselves
+	local flags
+	flags="$(sed -n 's/^flags[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -n1)"
+	[[ -n $flags ]] \
+		|| return 1
+	cpu_flags_support_x86_64_v3 "$flags"
+}
+
+# True when a /proc/cpuinfo flags line contains everything x86-64-v2 and v3 require
+function cpu_flags_support_x86_64_v3() {
+	local flags=" $1 "
+	local feature
+	for feature in cx16 lahf_lm popcnt pni sse4_1 sse4_2 ssse3 avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; do
+		[[ $flags == *" $feature "* ]] \
+			|| return 1
+	done
+	return 0
+}
+
+# Prints the microarchitecture level to build and fetch binary packages for
+function resolve_cpu_microarch() {
+	case "${CPU_MICROARCH:-auto}" in
+		'x86-64'|'x86-64-v3')
+			echo -n "$CPU_MICROARCH"
+			;;
+		'auto')
+			if [[ $GENTOO_ARCH == "amd64" ]] && cpu_supports_x86_64_v3; then
+				echo -n "x86-64-v3"
+			else
+				echo -n "x86-64"
+			fi
+			;;
+		*) die "CPU_MICROARCH must be one of 'auto', 'x86-64' or 'x86-64-v3'" ;;
+	esac
+}
+
 function check_config() {
 	check_required_config_variables
 
@@ -132,6 +183,14 @@ function check_config() {
 	case "${DETECT_EXISTING_PARTITIONS:-true}" in
 		true|false) ;;
 		*) die "DETECT_EXISTING_PARTITIONS must be either true or false" ;;
+	esac
+
+	case "${CPU_MICROARCH:-auto}" in
+		auto|x86-64) ;;
+		x86-64-v3)
+			[[ $GENTOO_ARCH == "amd64" ]] \
+				|| die "CPU_MICROARCH=x86-64-v3 requires GENTOO_ARCH=amd64" ;;
+		*) die "CPU_MICROARCH must be one of 'auto', 'x86-64' or 'x86-64-v3'" ;;
 	esac
 
 	# Without these the generated .network file would leave the system without networking
