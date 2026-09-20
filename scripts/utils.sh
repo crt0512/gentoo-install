@@ -33,6 +33,39 @@ function die_trace() {
 	exit 1
 }
 
+# Mirrors everything this process and its children print into TMP_DIR/install.log
+function start_install_log() {
+	# The installer inside the chroot writes through the outer process, which already logs
+	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] \
+		|| return 0
+	[[ -z ${INSTALL_LOG:-} ]] \
+		|| return 0
+
+	local log="$TMP_DIR/install.log"
+	[[ ! -L $log ]] \
+		|| die "Refusing symlinked install log '$log'"
+	touch -- "$log" \
+		|| die "Could not create install log '$log'"
+	chmod 0600 -- "$log" \
+		|| die "Could not protect install log '$log'"
+
+	INSTALL_LOG="$log"
+	export INSTALL_LOG
+	printf '\n===== %s: starting %s =====\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$log" \
+		|| die "Could not write to install log '$log'"
+	exec > >(tee -a -- "$log") 2>&1
+	einfo "Logging this installation to $log"
+}
+
+# Runs an interactive shell on the terminal, because the logged stdio is a pipe
+function run_recovery_shell() {
+	if [[ -n ${INSTALL_LOG:-} && -c /dev/tty ]]; then
+		/bin/bash --init-file <(echo "init_bash") >/dev/tty 2>/dev/tty
+	else
+		/bin/bash --init-file <(echo "init_bash")
+	fi
+}
+
 function for_line_in() {
 	while IFS="" read -r line || [[ -n $line ]]; do
 		"$2" "$line"
@@ -104,7 +137,7 @@ function try() {
 				case "${response,,}" in
 					''|s|shell)
 						echo "You will be prompted for action again after exiting this shell."
-						/bin/bash --init-file <(echo "init_bash")
+						run_recovery_shell
 						;;
 					r|retry) continue 2 ;;
 					a|abort) die "Installation aborted" ;;
@@ -143,7 +176,7 @@ function try_fatal() {
 			case "${response,,}" in
 				''|s|shell)
 					echo "You will be prompted again after exiting the recovery shell."
-					/bin/bash --init-file <(echo "init_bash")
+					run_recovery_shell
 					;;
 				r|retry) continue 2 ;;
 				a|abort) die "Installation aborted after required command failure" ;;
@@ -486,10 +519,37 @@ function load_or_generate_uuid() {
 		chmod 0600 -- "$uuid_file" \
 			|| die "Could not protect UUID state file '$uuid_file'"
 	fi
-	[[ $uuid =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-5][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}$ ]] \
+	[[ $uuid =~ $INSTALLER_UUID_REGEX ]] \
 		|| die "Invalid UUID in installer state file '$uuid_file'"
 
 	echo -n "$uuid"
+}
+
+# Encodes a disk id the same way create_new_id does for its state file name
+function uuid_storage_key() {
+	base64 -w 0 <<< "$1" \
+		|| die "Could not encode identifier '$1' for UUID storage"
+}
+
+# Overwrites the stored uuid of an id so the installer inside the chroot resolves the same device
+function persist_installer_uuid() {
+	local id="$1"
+	local uuid="$2"
+	[[ $uuid =~ $INSTALLER_UUID_REGEX ]] \
+		|| die "Refusing to store malformed UUID '$uuid' for identifier '$id'"
+
+	local storage_key
+	storage_key="$(uuid_storage_key "$id")" \
+		|| die "Could not encode identifier '$id' for UUID storage"
+	local uuid_file="$UUID_STORAGE_DIR/$storage_key"
+	[[ ! -L $uuid_file ]] \
+		|| die "Unsafe UUID state file '$uuid_file'"
+	install -d -m 0700 -- "$UUID_STORAGE_DIR" \
+		|| die "Could not create UUID storage '$UUID_STORAGE_DIR'"
+	printf '%s' "$uuid" > "$uuid_file" \
+		|| die "Could not write UUID state file '$uuid_file'"
+	chmod 0600 -- "$uuid_file" \
+		|| die "Could not protect UUID state file '$uuid_file'"
 }
 
 # Parses named arguments and stores them in the associative array `arguments`.

@@ -170,6 +170,10 @@ fi
 prepare_secure_tmp_dir
 readonly TMP_DIR ROOT_MOUNTPOINT GENTOO_INSTALL_REPO_BIND UUID_STORAGE_DIR LUKS_HEADER_BACKUP_DIR LUKS_HEADER_TARGET_DIR
 
+# Repair mode runs an interactive shell, which must keep the terminal on its stdio
+[[ "$ACTION" != "install" ]] \
+	|| start_install_log "install"
+
 if [[ "$ACTION" != "chroot" ]]; then
 	# Load config if we aren't just chrooting.
 	# shellcheck disable=SC1090

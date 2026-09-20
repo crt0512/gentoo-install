@@ -41,6 +41,50 @@ USED_BTRFS=false
 USED_ENCRYPTION=false
 # Flag to track whether partitioning or formatting is forbidden
 NO_PARTITIONING_OR_FORMATTING=false
+# Check whether the disks are already partitioned as configured and offer to keep that layout
+DETECT_EXISTING_PARTITIONS=true
+# Set at runtime once the existing partitions were confirmed for reuse
+REUSE_EXISTING_PARTITIONS=false
+# Set at runtime when the reused partitions must keep their current filesystems
+KEEP_EXISTING_FILESYSTEMS=false
+# Maps disk ids to the uuids that were found on disk while detecting an existing layout
+declare -gA DISK_DETECTED_UUIDS=()
+# Accepted uuid format for installer state files and for adopted on-disk identifiers
+INSTALLER_UUID_REGEX='^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[1-5][[:xdigit:]]{3}-[89abAB][[:xdigit:]]{3}-[[:xdigit:]]{12}$'
+
+# Restrict mirrorselect to a single country instead of probing the whole mirror list
+SELECT_MIRRORS_COUNTRY=""
+
+# Defaults for optional settings, so a configuration which does not mention them still works
+SYSTEMD_NETWORKD=true
+SYSTEMD_NETWORKD_INTERFACE_NAME="en*"
+SYSTEMD_NETWORKD_DHCP=true
+SYSTEMD_NETWORKD_ADDRESSES=()
+SYSTEMD_NETWORKD_GATEWAY=""
+SYSTEMD_INITRAMFS_SSHD=false
+PORTAGE_SYNC_TYPE="git"
+PORTAGE_GIT_FULL_HISTORY=false
+PORTAGE_GIT_MIRROR="https://anongit.gentoo.org/git/repo/sync/gentoo.git"
+USE_PORTAGE_TESTING=false
+SELECT_MIRRORS=false
+SELECT_MIRRORS_LARGE_FILE=false
+ADDITIONAL_PACKAGES=()
+ENABLE_SSHD=false
+ENABLE_BINPKG=false
+KERNEL_TYPE=bin
+BOOTLOADER=""
+ROOT_SSH_AUTHORIZED_KEYS=""
+
+# Name of an unprivileged user to create, or empty to create none
+CREATE_USER=""
+# Comma separated supplementary groups for the created user
+CREATE_USER_GROUPS="wheel,audio,video,usb,portage"
+# Login shell for the created user
+CREATE_USER_SHELL="/bin/bash"
+# Install sudo and allow the wheel group to use it
+CREATE_USER_SUDO=true
+# Authorized ssh keys for the created user, one per line
+CREATE_USER_SSH_AUTHORIZED_KEYS=""
 
 # An array of disk related actions to perform
 DISK_ACTIONS=()
@@ -126,7 +170,7 @@ function create_new_id() {
 	[[ ! -v DISK_ID_TO_UUID[$id] ]] \
 		|| die_trace 2 "Identifier '$id' already exists"
 	local storage_key
-	storage_key="$(base64 -w 0 <<< "$id")" \
+	storage_key="$(uuid_storage_key "$id")" \
 		|| die_trace 2 "Could not encode identifier '$id' for UUID storage"
 	local generated_uuid
 	generated_uuid="$(load_or_generate_uuid "$storage_key")" \

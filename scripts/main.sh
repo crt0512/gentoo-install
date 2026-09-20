@@ -87,6 +87,24 @@ function configure_base_system() {
 	env_update
 }
 
+# Restricts mirrorselect to one country, which avoids probing the full worldwide mirror list
+function select_mirrors_in_country() {
+	einfo "Restricting mirror selection to $SELECT_MIRRORS_COUNTRY"
+	if ! mirrorselect -c "$SELECT_MIRRORS_COUNTRY" "$@"; then
+		ewarn "mirrorselect found no usable mirrors in $SELECT_MIRRORS_COUNTRY, falling back to the full mirror list"
+		return 1
+	fi
+
+	# A filter matching nothing can still exit successfully, so make sure a mirror was really written
+	local mirrors
+	mirrors="$(sed -n 's/^GENTOO_MIRRORS=//p' /etc/portage/make.conf 2>/dev/null | tail -n1)"
+	mirrors="${mirrors//[\"[:space:]]/}"
+	if [[ -z $mirrors ]]; then
+		ewarn "mirrorselect did not select any mirror in $SELECT_MIRRORS_COUNTRY, falling back to the full mirror list"
+		return 1
+	fi
+}
+
 function configure_portage() {
 	# Prepare /etc/portage for autounmask
 	mkdir_or_die 0755 "/etc/portage/package.use"
@@ -103,7 +121,11 @@ function configure_portage() {
 		mirrorselect_params=("-s" "4" "-b" "10")
 		[[ $SELECT_MIRRORS_LARGE_FILE == "true" ]] \
 			&& mirrorselect_params+=("-D")
-		try mirrorselect "${mirrorselect_params[@]}"
+		if [[ -n ${SELECT_MIRRORS_COUNTRY:-} ]] && select_mirrors_in_country "${mirrorselect_params[@]}"; then
+			einfo "Selected portage mirrors in $SELECT_MIRRORS_COUNTRY"
+		else
+			try mirrorselect "${mirrorselect_params[@]}"
+		fi
 	fi
 
 	if [[ $ENABLE_BINPKG == "true" ]]; then
@@ -138,6 +160,140 @@ function install_authorized_keys() {
 	fi
 }
 
+function group_exists() {
+	local name
+	while IFS=: read -r name _; do
+		[[ $name == "$1" ]] \
+			&& return 0
+	done < /etc/group
+	return 1
+}
+
+function account_exists() {
+	local login
+	while IFS=: read -r login _; do
+		[[ $login == "$1" ]] \
+			&& return 0
+	done < /etc/passwd
+	return 1
+}
+
+function account_is_in_group() {
+	local name members
+	while IFS=: read -r name _ _ members; do
+		[[ $name == "$2" ]] \
+			|| continue
+		[[ ",$members," == *",$1,"* ]] \
+			&& return 0
+	done < /etc/group
+	return 1
+}
+
+function account_home_dir() {
+	local login home
+	while IFS=: read -r login _ _ _ _ home _; do
+		[[ $login == "$1" ]] \
+			|| continue
+		echo -n "$home"
+		return 0
+	done < /etc/passwd
+	return 1
+}
+
+# Prints the subset of CREATE_USER_GROUPS which actually exists in the new system
+function existing_user_groups() {
+	local -a existing=()
+	local group
+	# Splitting is intentional here
+	# shellcheck disable=SC2086
+	for group in ${CREATE_USER_GROUPS//,/ }; do
+		if group_exists "$group"; then
+			existing+=("$group")
+		else
+			ewarn "Skipping group '$group' for user '$CREATE_USER', it does not exist"
+		fi
+	done
+
+	local IFS=,
+	echo -n "${existing[*]-}"
+}
+
+function install_user_authorized_keys() {
+	local home
+	home="$(account_home_dir "$CREATE_USER")" \
+		|| die "Could not determine the home directory of '$CREATE_USER'"
+	[[ -n $home && -d $home ]] \
+		|| die "User '$CREATE_USER' has no home directory"
+
+	einfo "Adding authorized keys for $CREATE_USER"
+	mkdir_or_die 0700 "$home/.ssh"
+	touch_or_die 0600 "$home/.ssh/authorized_keys"
+	echo "$CREATE_USER_SSH_AUTHORIZED_KEYS" > "$home/.ssh/authorized_keys" \
+		|| die "Could not add ssh keys to '$home/.ssh/authorized_keys'"
+	chown -R "$CREATE_USER:" "$home/.ssh" \
+		|| die "Could not change owner of '$home/.ssh'"
+}
+
+function configure_user_sudo() {
+	einfo "Installing sudo"
+	try_fatal emerge --verbose app-admin/sudo
+
+	mkdir_or_die 0750 "/etc/sudoers.d"
+	echo "%wheel ALL=(ALL:ALL) ALL" > /etc/sudoers.d/10-wheel \
+		|| die "Could not write /etc/sudoers.d/10-wheel"
+	chmod 0440 /etc/sudoers.d/10-wheel \
+		|| die "Could not protect /etc/sudoers.d/10-wheel"
+	visudo -c -f /etc/sudoers.d/10-wheel >/dev/null \
+		|| die "Generated an invalid /etc/sudoers.d/10-wheel"
+}
+
+function create_configured_user() {
+	[[ -n ${CREATE_USER:-} ]] \
+		|| return 0
+
+	local groups
+	groups="$(existing_user_groups)"
+	local -a group_args=()
+	[[ -z $groups ]] \
+		|| group_args=("-G" "$groups")
+
+	einfo "Creating user $CREATE_USER"
+	if account_exists "$CREATE_USER"; then
+		ewarn "User '$CREATE_USER' already exists, only its groups and shell will be updated"
+		if [[ ${#group_args[@]} -gt 0 ]]; then
+			try_fatal usermod -a "${group_args[@]}" -s "$CREATE_USER_SHELL" "$CREATE_USER"
+		else
+			try_fatal usermod -s "$CREATE_USER_SHELL" "$CREATE_USER"
+		fi
+	else
+		try_fatal useradd -m "${group_args[@]}" -s "$CREATE_USER_SHELL" "$CREATE_USER"
+	fi
+
+	[[ -z $CREATE_USER_SSH_AUTHORIZED_KEYS ]] \
+		|| install_user_authorized_keys
+	[[ $CREATE_USER_SUDO != "true" ]] \
+		|| configure_user_sudo
+
+	if ask "Do you want to assign a password for $CREATE_USER now?"; then
+		passwd "$CREATE_USER" \
+			|| die "Could not set the password of '$CREATE_USER'"
+		account_has_password "$CREATE_USER" \
+			|| die "Password of '$CREATE_USER' was not set"
+		einfo "Password for $CREATE_USER assigned"
+	else
+		ewarn "User '$CREATE_USER' has no password and can only log in with an ssh key"
+	fi
+}
+
+# True when the created user can administer the system, which makes a root password optional
+function configured_user_can_administer() {
+	[[ -n ${CREATE_USER:-} && $CREATE_USER_SUDO == "true" ]] \
+		|| return 1
+	account_has_password "$CREATE_USER" \
+		|| return 1
+	account_is_in_group "$CREATE_USER" wheel
+}
+
 function account_has_password() {
 	local account="$1"
 	local login
@@ -163,6 +319,11 @@ function lock_root_account() {
 function ensure_safe_admin_access() {
 	if account_has_password root; then
 		einfo "Verified password access for root"
+		return 0
+	fi
+
+	if configured_user_can_administer; then
+		einfo "Verified password access for $CREATE_USER, which can use sudo"
 		return 0
 	fi
 
@@ -518,9 +679,13 @@ function write_grub_cfg() {
 	local kernel_cmdline
 	kernel_cmdline="$(get_cmdline)" \
 		|| die "Could not generate GRUB kernel command line"
-	local boot_id="$DISK_ID_BIOS"
-	[[ $IS_EFI == "true" ]] \
-		&& boot_id="$DISK_ID_EFI"
+	# DISK_ID_BIOS does not exist on efi systems, so it must not be expanded there
+	local boot_id
+	if [[ $IS_EFI == "true" ]]; then
+		boot_id="$DISK_ID_EFI"
+	else
+		boot_id="$DISK_ID_BIOS"
+	fi
 	local boot_uuid
 	boot_uuid="$(get_blkid_uuid_for_id "$boot_id")" \
 		|| die "Could not resolve filesystem UUID for boot id '$boot_id'"
@@ -973,6 +1138,8 @@ EOF
 		try_fatal emerge --verbose --autounmask-continue=y -- "${ADDITIONAL_PACKAGES[@]}"
 	fi
 
+	create_configured_user
+
 	if ask "Do you want to assign a root password now?"; then
 		passwd root \
 			|| die "Could not set root password"
@@ -998,6 +1165,8 @@ EOF
 	ensure_safe_admin_access
 
 	einfo "Gentoo installation complete."
+	[[ -z ${INSTALL_LOG:-} ]] \
+		|| einfo "The full output of this run was logged to '$INSTALL_LOG'"
 	[[ $USED_LUKS == "true" ]] \
 		&& einfo "LUKS header backups are stored at '$LUKS_HEADER_TARGET_DIR'. Keep an external copy for independent recovery."
 	einfo "You may now reboot your system or execute ./install --chroot $ROOT_MOUNTPOINT to enter your system in a chroot."

@@ -92,6 +92,31 @@ and only allow root to login.
 You can provide keys that will be written to root's `.ssh/authorized_keys` file. This will allow
 you to directly continue your setup with your favourite infrastructure management software.
 
+### (Optional) Unprivileged user
+
+Set `CREATE_USER` to have the installer create an unprivileged user at the end of the
+installation. Its supplementary groups, login shell and authorized ssh keys are configurable,
+and `CREATE_USER_SUDO` additionally installs `app-admin/sudo` and allows the `wheel` group to
+use it. You will be asked for the user's password interactively, so no password is ever stored
+in the configuration file. If that user is in `wheel` and has a password, the root account may
+stay locked.
+
+### (Optional) Reusing an existing partition layout
+
+With `DETECT_EXISTING_PARTITIONS=true` (the default) the installer checks whether the disks
+already carry exactly the configured partitions before it touches anything. If they do, it offers
+to keep them instead of repartitioning, which saves a reboot when retrying a failed installation
+on live media that will not re-read a busy partition table. You are then asked separately whether
+the filesystems should be reformatted. Detection is limited to plain gpt layouts, and keeping
+existing filesystems is not offered for luks, raid or zfs layouts.
+
+### (Optional) Faster mirror selection
+
+`mirrorselect` tests the whole worldwide mirror list by default, which takes a long time. Set
+`SELECT_MIRRORS_COUNTRY` to a country name from the gentoo mirror list (e.g. `"Germany"`) to
+only test the mirrors hosted there. The installer falls back to the full list if that country
+has no usable mirror.
+
 ### (Optional) Additional packages
 
 You can add any amount of additional packages to be installed on the target system.

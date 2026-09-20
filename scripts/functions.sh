@@ -49,7 +49,38 @@ function sync_time() {
 		|| ewarn "Could not write synchronized time to the hardware clock"
 }
 
+# Settings without a safe default, reported together instead of failing later as an unbound variable
+function check_required_config_variables() {
+	local -a required=(
+		HOSTNAME
+		TIMEZONE
+		KEYMAP
+		KEYMAP_INITRAMFS
+		LOCALES
+		LOCALE
+		GENTOO_MIRROR
+		GENTOO_ARCH
+		GENTOO_SUBARCH
+		STAGE3_VARIANT
+		STAGE3_BASENAME
+		SYSTEMD
+		MUSL
+	)
+
+	local -a missing=()
+	local name
+	for name in "${required[@]}"; do
+		[[ -v "$name" ]] \
+			|| missing+=("$name")
+	done
+
+	[[ ${#missing[@]} -eq 0 ]] \
+		|| die "Your configuration does not define: ${missing[*]}. Compare it against gentoo.conf.example or regenerate it with ./configure."
+}
+
 function check_config() {
+	check_required_config_variables
+
 	[[ $KEYMAP =~ ^[0-9A-Za-z-]*$ ]] \
 		|| die "KEYMAP contains invalid characters"
 
@@ -97,6 +128,45 @@ function check_config() {
 	esac
 	[[ $LUKS_HEADER_TARGET_DIR == /root/* && $LUKS_HEADER_TARGET_DIR != *'/../'* && $LUKS_HEADER_TARGET_DIR != */.. ]] \
 		|| die "LUKS_HEADER_TARGET_DIR must be a path below /root without '..' components"
+
+	case "${DETECT_EXISTING_PARTITIONS:-true}" in
+		true|false) ;;
+		*) die "DETECT_EXISTING_PARTITIONS must be either true or false" ;;
+	esac
+
+	# Without these the generated .network file would leave the system without networking
+	if [[ $SYSTEMD == "true" && $SYSTEMD_NETWORKD == "true" && $SYSTEMD_NETWORKD_DHCP != "true" ]]; then
+		[[ ${#SYSTEMD_NETWORKD_ADDRESSES[@]} -gt 0 ]] \
+			|| die "SYSTEMD_NETWORKD_DHCP=false requires at least one entry in SYSTEMD_NETWORKD_ADDRESSES"
+		[[ -n $SYSTEMD_NETWORKD_GATEWAY ]] \
+			|| die "SYSTEMD_NETWORKD_DHCP=false requires SYSTEMD_NETWORKD_GATEWAY"
+	fi
+	# The value is passed to mirrorselect as a single argument, so only reject obvious mistakes
+	local country_regex="^[A-Za-z][A-Za-z .'-]*$"
+	[[ -z ${SELECT_MIRRORS_COUNTRY:-} || ${SELECT_MIRRORS_COUNTRY} =~ $country_regex ]] \
+		|| die "SELECT_MIRRORS_COUNTRY must be a country name as used by the gentoo mirror list"
+
+	check_user_config
+}
+
+function check_user_config() {
+	[[ -n ${CREATE_USER:-} ]] \
+		|| return 0
+
+	# Same restriction as useradd's default NAME_REGEX
+	[[ $CREATE_USER =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+		|| die "CREATE_USER='$CREATE_USER' is not a valid user name"
+	[[ $CREATE_USER != "root" ]] \
+		|| die "CREATE_USER must not be root, use the root password prompt instead"
+	[[ ${CREATE_USER_GROUPS:-} =~ ^([a-z_][a-z0-9_-]*(,[a-z_][a-z0-9_-]*)*)?$ ]] \
+		|| die "CREATE_USER_GROUPS must be a comma separated list of group names"
+	[[ ${CREATE_USER_SHELL:-/bin/bash} == /* ]] \
+		|| die "CREATE_USER_SHELL must be an absolute path"
+
+	case "${CREATE_USER_SUDO:-true}" in
+		true|false) ;;
+		*) die "CREATE_USER_SUDO must be either true or false" ;;
+	esac
 }
 
 function validate_kernel_type() {
@@ -317,6 +387,8 @@ function installer_exit_handler() {
 	trap - EXIT INT TERM HUP
 	[[ $status -ne 0 ]] || return 0
 	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] || return 0
+	[[ -z ${INSTALL_LOG:-} ]] \
+		|| eerror "The full output of this run was logged to '$INSTALL_LOG'"
 	cleanup_installer_failure_resources
 }
 
@@ -631,6 +703,10 @@ function disk_create_raid() {
 	fi
 
 # See https://serverfault.com/questions/1163715/mdadm-value-arch12021-cannot-be-set-as-devname-reason-not-posix-compatible
+	# Reused partitions can still carry a raid superblock, which would make mdadm ask for confirmation
+	wipefs --quiet --all --force "${devices[@]}" \
+		|| die "Could not erase previous file system signatures from $devices_desc"
+
 	einfo "Creating raid$level ($new_id) on $devices_desc"
 	mdadm \
 			--create "$mddevice" \
@@ -941,9 +1017,251 @@ function disk_format_btrfs() {
 	init_btrfs "${devices[0]}" "btrfs array ($devices_desc)"
 }
 
+# Prints the gpt type code that create_partition would use for a configured partition type
+function gpt_type_code_for_type() {
+	case "$1" in
+		'bios')  echo -n ef02 ;;
+		'efi')   echo -n ef00 ;;
+		'swap')  echo -n 8200 ;;
+		'raid')  echo -n fd00 ;;
+		'luks')  echo -n 8309 ;;
+		'linux') echo -n 8300 ;;
+		*)       echo -n "${1,,}" ;;
+	esac
+}
+
+# Converts a gdisk size specification like 8GiB or 512M to bytes, a plain number is a sector count
+function gdisk_size_to_bytes() {
+	local spec="$1"
+	local sector_size="$2"
+	local number="${spec%%[!0-9]*}"
+	[[ -n $number ]] \
+		|| return 1
+
+	case "${spec:${#number}:1}" in
+		'')             echo -n "$((number * sector_size))" ;;
+		'k'|'K')        echo -n "$((number * 1024))" ;;
+		'm'|'M')        echo -n "$((number * 1024 ** 2))" ;;
+		'g'|'G')        echo -n "$((number * 1024 ** 3))" ;;
+		't'|'T')        echo -n "$((number * 1024 ** 4))" ;;
+		'p'|'P')        echo -n "$((number * 1024 ** 5))" ;;
+		*)              return 1 ;;
+	esac
+}
+
+# Prints the sgdisk table of a device, but only if the device really carries a gpt
+function gpt_print_table() {
+	local pttype
+	pttype="$(lsblk --nodeps --noheadings --output PTTYPE -- "$1" 2>/dev/null)" \
+		|| return 1
+	[[ ${pttype//[[:space:]]/} == "gpt" ]] \
+		|| return 1
+	sgdisk --print "$1" 2>/dev/null
+}
+
+# Prints "start end code" for the given partition number of an sgdisk table
+function gpt_partition_row() {
+	awk -v number="$2" 'in_table && $1 == number { print $2, $3, $6; found = 1; exit } /^Number / { in_table = 1 } END { exit !found }' <<< "$1"
+}
+
+# Prints how many partitions an sgdisk table lists
+function gpt_partition_count() {
+	awk 'in_table && NF >= 6 { count++ } /^Number / { in_table = 1 } END { print count + 0 }' <<< "$1"
+}
+
+# Prints the unique partition guid of the given partition number
+function gpt_partition_guid() {
+	local guid
+	guid="$(sgdisk --info="$2" "$1" 2>/dev/null | sed -n 's/^Partition unique GUID: *\([^ ]*\).*/\1/p' | head -n1)" \
+		|| return 1
+	[[ -n $guid ]] \
+		|| return 1
+	echo -n "$guid"
+}
+
+# Checks one partition of an sgdisk table against the configured type and size
+function gpt_partition_matches() {
+	local table="$1"
+	local sector_size="$2"
+	local last_usable="$3"
+	local number="$4"
+	local type="$5"
+	local size="$6"
+
+	local row
+	row="$(gpt_partition_row "$table" "$number")" \
+		|| return 1
+	local start end code
+	read -r start end code <<< "$row"
+	[[ ${code,,} == "$(gpt_type_code_for_type "$type")" ]] \
+		|| return 1
+
+	# Partition starts are aligned, so accept a small deviation from the configured size
+	local slack=$((2 * 1024 ** 2))
+	if [[ $size == "remaining" ]]; then
+		[[ $(((last_usable - end) * sector_size)) -le $slack ]]
+		return
+	fi
+
+	local wanted_bytes
+	wanted_bytes="$(gdisk_size_to_bytes "$size" "$sector_size")" \
+		|| return 1
+	local difference=$((((end - start + 1) * sector_size) - wanted_bytes))
+	[[ ${difference#-} -le $slack ]]
+}
+
+# Succeeds when every configured gpt and partition already exists on disk as described
+function detect_existing_partition_layout() {
+	DISK_DETECTED_UUIDS=()
+	local -A gpt_device=()
+	local -A gpt_table=()
+	local -A gpt_sector_size=()
+	local -A gpt_last_usable=()
+	local -A gpt_parts=()
+	local -A action=()
+	local -a current=()
+	local param
+	local key_value
+
+	for param in "${DISK_ACTIONS[@]}"; do
+		if [[ $param != ';' ]]; then
+			current+=("$param")
+			continue
+		fi
+
+		action=()
+		for key_value in "${current[@]}"; do
+			action["${key_value%%=*}"]="${key_value#*=}"
+		done
+		current=()
+
+		case "${action[action]}" in
+			'create_gpt')
+				# A gpt on top of another id (raid, luks) is not detected, those are always recreated
+				[[ -v action[device] ]] \
+					|| return 1
+				local gpt_id="${action[new_id]}"
+				local device
+				device="$(canonicalize_whole_block_device "${action[device]}")" \
+					|| return 1
+				local table
+				table="$(gpt_print_table "$device")" \
+					|| return 1
+				local sector_size last_usable disk_guid
+				sector_size="$(sed -n 's|^Sector size (logical/physical): *\([0-9]\{1,\}\)/.*|\1|p' <<< "$table" | head -n1)"
+				last_usable="$(sed -n 's/.*last usable sector is \([0-9]\{1,\}\).*/\1/p' <<< "$table" | head -n1)"
+				disk_guid="$(sed -n 's/^Disk identifier (GUID): *\([^ ]*\).*/\1/p' <<< "$table" | head -n1)"
+				[[ -n $sector_size && -n $last_usable && -n $disk_guid ]] \
+					|| return 1
+				gpt_device[$gpt_id]="$device"
+				gpt_table[$gpt_id]="$table"
+				gpt_sector_size[$gpt_id]="$sector_size"
+				gpt_last_usable[$gpt_id]="$last_usable"
+				gpt_parts[$gpt_id]=0
+				DISK_DETECTED_UUIDS[$gpt_id]="$disk_guid"
+				;;
+			'create_partition')
+				local parent_id="${action[id]}"
+				[[ -v gpt_device[$parent_id] ]] \
+					|| return 1
+				local number=$((gpt_parts[$parent_id] + 1))
+				gpt_parts[$parent_id]="$number"
+				gpt_partition_matches \
+						"${gpt_table[$parent_id]}" \
+						"${gpt_sector_size[$parent_id]}" \
+						"${gpt_last_usable[$parent_id]}" \
+						"$number" \
+						"${action[type]}" \
+						"${action[size]}" \
+					|| return 1
+				local partition_guid
+				partition_guid="$(gpt_partition_guid "${gpt_device[$parent_id]}" "$number")" \
+					|| return 1
+				DISK_DETECTED_UUIDS["${action[new_id]}"]="$partition_guid"
+				;;
+		esac
+	done
+
+	[[ ${#gpt_device[@]} -gt 0 ]] \
+		|| return 1
+
+	# An extra partition means the disk holds something the configuration does not describe
+	local id
+	for id in "${!gpt_device[@]}"; do
+		[[ ${gpt_parts[$id]} -gt 0 ]] \
+			|| return 1
+		[[ "$(gpt_partition_count "${gpt_table[$id]}")" -eq "${gpt_parts[$id]}" ]] \
+			|| return 1
+	done
+
+	for id in "${!DISK_DETECTED_UUIDS[@]}"; do
+		DISK_DETECTED_UUIDS[$id]="${DISK_DETECTED_UUIDS[$id],,}"
+		[[ ${DISK_DETECTED_UUIDS[$id]} =~ $INSTALLER_UUID_REGEX ]] \
+			|| return 1
+	done
+
+	return 0
+}
+
+# Replaces the generated uuids with the ones found on disk so every later step resolves the reused partitions
+function adopt_detected_partition_uuids() {
+	local id
+	local uuid
+	local resolvable_type
+	for id in "${!DISK_DETECTED_UUIDS[@]}"; do
+		uuid="${DISK_DETECTED_UUIDS[$id]}"
+		resolvable_type="${DISK_ID_TO_RESOLVABLE[$id]%%:*}"
+		DISK_ID_TO_UUID[$id]="$uuid"
+		create_resolve_entry "$id" "$resolvable_type" "$uuid"
+		persist_installer_uuid "$id" "$uuid"
+	done
+}
+
+# Offers to keep an existing partition table which already matches the configuration
+function maybe_reuse_existing_partitions() {
+	[[ ${DETECT_EXISTING_PARTITIONS:-true} == "true" ]] \
+		|| return 0
+
+	einfo "Checking whether the disks are already partitioned as configured"
+	if ! detect_existing_partition_layout; then
+		elog "The existing partitions do not match the configuration, the disks will be partitioned from scratch."
+		return 0
+	fi
+
+	elog "The existing partitions already match the configured layout."
+	elog "Reusing them skips repartitioning, which otherwise often needs a reboot after a failed run."
+	ask "Do you want to reuse the existing partitions?" \
+		|| return 0
+
+	adopt_detected_partition_uuids
+	REUSE_EXISTING_PARTITIONS=true
+
+	if [[ $USED_LUKS == "true" || $USED_RAID == "true" || $USED_ZFS == "true" ]]; then
+		ewarn "Keeping existing filesystems is not supported for luks, raid or zfs layouts. They will be recreated."
+		return 0
+	fi
+
+	ask "Do you want to reformat the filesystems on the reused partitions?" \
+		&& return 0
+	KEEP_EXISTING_FILESYSTEMS=true
+}
+
+# True when an action must not run because existing partitions or filesystems are reused
+function disk_action_is_skipped() {
+	case "$1" in
+		'create_gpt'|'create_partition')       [[ $REUSE_EXISTING_PARTITIONS == "true" ]] ;;
+		'format'|'format_zfs'|'format_btrfs')  [[ $KEEP_EXISTING_FILESYSTEMS == "true" ]] ;;
+		*) return 1 ;;
+	esac
+}
+
 function apply_disk_action() {
 	unset known_arguments
 	unset arguments; declare -A arguments; parse_arguments "$@"
+	if [[ ${disk_action_summarize_only-false} != "true" ]] && disk_action_is_skipped "${arguments[action]}"; then
+		einfo "Skipping ${arguments[action]}, the existing disk state is reused"
+		return 0
+	fi
 	case "${arguments[action]}" in
 		'existing')          disk_existing         ;;
 		'create_gpt')        disk_create_gpt       ;;
@@ -1095,15 +1413,29 @@ function apply_disk_configuration() {
 		# Re-check immediately before confirmation. A device may have become busy
 		# after the configuration was initially parsed.
 		validate_destructive_whole_block_devices 1 "configured disk layout" "${DESTRUCTIVE_DEVICES[@]}"
+		maybe_reuse_existing_partitions
 
-		ewarn "The following whole devices will be irreversibly erased:"
 		local destructive_device
-		for destructive_device in "${DESTRUCTIVE_DEVICES[@]}"; do
-			ewarn "  $destructive_device"
-		done
-		# I hate it when scripts try and and babysit me
-		ask "This destroys all data on the listed devices. Continue?" \
-			|| die "Destructive disk operation cancelled"
+		if [[ $KEEP_EXISTING_FILESYSTEMS == "true" ]]; then
+			elog "The existing partitions and filesystems on these devices will be kept:"
+			for destructive_device in "${DESTRUCTIVE_DEVICES[@]}"; do
+				elog "  $destructive_device"
+			done
+			ask "Continue without partitioning or formatting anything?" \
+				|| die "Destructive disk operation cancelled"
+		else
+			if [[ $REUSE_EXISTING_PARTITIONS == "true" ]]; then
+				ewarn "The existing partitions will be kept, but everything stored in them will be erased:"
+			else
+				ewarn "The following whole devices will be irreversibly erased:"
+			fi
+			for destructive_device in "${DESTRUCTIVE_DEVICES[@]}"; do
+				ewarn "  $destructive_device"
+			done
+			# I hate it when scripts try and and babysit me
+			ask "This destroys all data on the listed devices. Continue?" \
+				|| die "Destructive disk operation cancelled"
+		fi
 		confirmed_destructive_devices=("${DESTRUCTIVE_DEVICES[@]}")
 	fi
 	countdown "Applying in " 5
@@ -1408,7 +1740,9 @@ function download_stage3() {
 
 	local STAGE3_BASENAME_FINAL
 	if [[ ("$GENTOO_ARCH" == "amd64" && "$STAGE3_VARIANT" == *x32*) || ("$GENTOO_ARCH" == "x86" && -n "$GENTOO_SUBARCH") ]]; then
-		STAGE3_BASENAME_FINAL="$STAGE3_BASENAME_CUSTOM"
+		STAGE3_BASENAME_FINAL="${STAGE3_BASENAME_CUSTOM:-}"
+		[[ -n $STAGE3_BASENAME_FINAL ]] \
+			|| die "This arch and variant combination requires STAGE3_BASENAME_CUSTOM to be set in your configuration"
 	else
 		STAGE3_BASENAME_FINAL="$STAGE3_BASENAME"
 	fi

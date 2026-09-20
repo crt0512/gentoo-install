@@ -111,6 +111,13 @@ function disk_configuration() {
 	#create_btrfs_centric_layout swap=8GiB luks=true /dev/sdX
 }
 
+# If set to true, the installer checks whether the disks are already partitioned
+# exactly as configured above. If they are, it offers to keep those partitions
+# instead of repartitioning, which is useful when retrying a failed installation
+# without rebooting. You are then asked separately whether the filesystems
+# should be reformatted. Detection only covers plain gpt layouts.
+DETECT_EXISTING_PARTITIONS=true
+
 
 ################################################
 # Bootloader configuration
@@ -310,6 +317,12 @@ SELECT_MIRRORS=true
 # take significantly longer (~5-10min).
 SELECT_MIRRORS_LARGE_FILE=false
 
+# Restrict mirrorselect to mirrors from a single country, which is much faster
+# than probing the whole worldwide mirror list. Use the country name as it
+# appears in the gentoo mirror list, e.g. "Germany", "Switzerland" or "USA".
+# The installer falls back to the full list if no mirror matches.
+SELECT_MIRRORS_COUNTRY=""
+
 
 ################################################
 # Additional (optional) configuration
@@ -334,6 +347,26 @@ KERNEL_TYPE=bin
 # This variable will become the content of the authorized_keys file,
 # so you may specify one key per line (include the newlines in the variable).
 ROOT_SSH_AUTHORIZED_KEYS=""
+
+# Name of an unprivileged user to create, or "" to create none. You will be
+# asked for its password at the end of the installation, passwords are never
+# stored in this file.
+CREATE_USER=""
+
+# Comma separated supplementary groups for the created user. Groups which do
+# not exist in the new system are skipped with a warning.
+CREATE_USER_GROUPS="wheel,audio,video,usb,portage"
+
+# Login shell for the created user
+CREATE_USER_SHELL="/bin/bash"
+
+# Install app-admin/sudo and allow the wheel group to use it. If the created
+# user is in wheel and has a password, the root account may stay locked.
+CREATE_USER_SUDO=true
+
+# Authorized ssh keys for the created user, one per line, same format as
+# ROOT_SSH_AUTHORIZED_KEYS.
+CREATE_USER_SSH_AUTHORIZED_KEYS=""
 
 ################################################
 # Prove that you have read the config

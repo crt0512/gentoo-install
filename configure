@@ -465,6 +465,9 @@ function load_default_config() {
 	USE_PORTAGE_TESTING=true
 	SELECT_MIRRORS=false
 	SELECT_MIRRORS_LARGE_FILE=false
+	SELECT_MIRRORS_COUNTRY=""
+
+	DETECT_EXISTING_PARTITIONS=true
 
 	ADDITIONAL_PACKAGES=()
 	ENABLE_SSHD=true
@@ -472,6 +475,11 @@ function load_default_config() {
 	KERNEL_TYPE=bin
 	BOOTLOADER="$DEFAULT_BOOTLOADER"
 	ROOT_SSH_AUTHORIZED_KEYS=""
+	CREATE_USER=""
+	CREATE_USER_GROUPS="wheel,audio,video,usb,portage"
+	CREATE_USER_SHELL="/bin/bash"
+	CREATE_USER_SUDO=true
+	CREATE_USER_SSH_AUTHORIZED_KEYS=""
 
 	# All settings are unsaved.
 	UNSAVED_CHANGES=true
@@ -903,6 +911,7 @@ MENU_ITEMS=(
 	"PARTITIONING_BTRFS_RAID_TYPE"
 	"PARTITIONING_DEVICE"
 	"PARTITIONING_DEVICES"
+	"DETECT_EXISTING_PARTITIONS"
 	"--------"
 	"HOSTNAME"
 	"TIMEZONE"
@@ -928,11 +937,17 @@ MENU_ITEMS=(
 	"USE_PORTAGE_TESTING"
 	"SELECT_MIRRORS"
 	"SELECT_MIRRORS_LARGE_FILE"
+	"SELECT_MIRRORS_COUNTRY"
 	"--------"
 	"ENABLE_SSHD"
 	"ENABLE_BINPKG"
 	"KERNEL_TYPE"
 	"ROOT_SSH_AUTHORIZED_KEYS"
+	"CREATE_USER"
+	"CREATE_USER_GROUPS"
+	"CREATE_USER_SHELL"
+	"CREATE_USER_SUDO"
+	"CREATE_USER_SSH_AUTHORIZED_KEYS"
 	"ADDITIONAL_PACKAGES"
 )
 
@@ -1599,6 +1614,106 @@ function SELECT_MIRRORS_LARGE_FILE_menu()  {
 	UNSAVED_CHANGES=true
 }
 
+function SELECT_MIRRORS_COUNTRY_tag()   { echo " └ Restrict to country"; }
+function SELECT_MIRRORS_COUNTRY_label() { echo " └ ($([[ -n $SELECT_MIRRORS_COUNTRY ]] && echo "$SELECT_MIRRORS_COUNTRY" || echo "all countries"))"; }
+function SELECT_MIRRORS_COUNTRY_show()  { is_on "$SELECT_MIRRORS"; }
+function SELECT_MIRRORS_COUNTRY_help()  { echo "Restricts mirrorselect to mirrors from a single country, which is much faster than probing the whole worldwide mirror list. Use the country name as it appears in the gentoo mirror list, for example 'Germany', 'Switzerland' or 'USA'. Leave empty to test all mirrors. If no mirror matches, the installer falls back to the full list."; }
+function SELECT_MIRRORS_COUNTRY_menu()  {
+	dialog \
+		--title "Restrict mirrors to a country" \
+		--inputbox "Enter the country whose mirrors should be tested, as it appears in the gentoo mirror list (e.g. Germany). Leave empty to test all mirrors." \
+		"${INPUTBOX_SIZE[@]}" "$SELECT_MIRRORS_COUNTRY" \
+		|| return 0
+	SELECT_MIRRORS_COUNTRY="$dialog_out"
+	UNSAVED_CHANGES=true
+}
+
+function DETECT_EXISTING_PARTITIONS_tag()   { echo "Reuse existing partitions"; }
+function DETECT_EXISTING_PARTITIONS_label() { on_off_label "$DETECT_EXISTING_PARTITIONS"; }
+function DETECT_EXISTING_PARTITIONS_show()  { return 0; }
+function DETECT_EXISTING_PARTITIONS_help()  { echo "Check whether the disks are already partitioned exactly as configured, and if so offer to keep those partitions instead of repartitioning. This is useful when retrying a failed installation without rebooting. You will be asked separately whether the filesystems should be reformatted. Detection only covers plain gpt layouts."; }
+function DETECT_EXISTING_PARTITIONS_menu()  {
+	on_off_toggle "DETECT_EXISTING_PARTITIONS"
+	UNSAVED_CHANGES=true
+}
+
+function CREATE_USER_tag()   { echo "Create user"; }
+function CREATE_USER_label() { echo "($([[ -n $CREATE_USER ]] && echo "$CREATE_USER" || echo "none"))"; }
+function CREATE_USER_show()  { return 0; }
+function CREATE_USER_help()  { echo "Name of an unprivileged user to create in the new system, or empty to create none. The password is asked for at the end of the installation and is never stored in the configuration file."; }
+function CREATE_USER_menu()  {
+	dialog \
+		--title "Create an unprivileged user" \
+		--inputbox "Enter the name of the user to create, or leave empty to create none." \
+		"${INPUTBOX_SIZE[@]}" "$CREATE_USER" \
+		|| return 0
+	CREATE_USER="$dialog_out"
+	UNSAVED_CHANGES=true
+}
+
+function CREATE_USER_GROUPS_tag()   { echo " └ Groups"; }
+function CREATE_USER_GROUPS_label() { echo " └ ($(ellipsis 20 "$CREATE_USER_GROUPS"))"; }
+function CREATE_USER_GROUPS_show()  { [[ -n $CREATE_USER ]]; }
+function CREATE_USER_GROUPS_help()  { echo "Comma separated supplementary groups for the created user. Groups which do not exist in the new system are skipped with a warning. Membership in wheel is what allows the user to use sudo."; }
+function CREATE_USER_GROUPS_menu()  {
+	dialog \
+		--title "Supplementary groups" \
+		--inputbox "Enter a comma separated list of supplementary groups for $CREATE_USER." \
+		"${INPUTBOX_SIZE[@]}" "$CREATE_USER_GROUPS" \
+		|| return 0
+	CREATE_USER_GROUPS="$dialog_out"
+	UNSAVED_CHANGES=true
+}
+
+function CREATE_USER_SHELL_tag()   { echo " └ Shell"; }
+function CREATE_USER_SHELL_label() { echo " └ ($(ellipsis 20 "$CREATE_USER_SHELL"))"; }
+function CREATE_USER_SHELL_show()  { [[ -n $CREATE_USER ]]; }
+function CREATE_USER_SHELL_help()  { echo "Login shell for the created user. Make sure the shell is actually installed, for example by adding it to the additional packages."; }
+function CREATE_USER_SHELL_menu()  {
+	dialog \
+		--title "Login shell" \
+		--inputbox "Enter the login shell for $CREATE_USER." \
+		"${INPUTBOX_SIZE[@]}" "$CREATE_USER_SHELL" \
+		|| return 0
+	CREATE_USER_SHELL="$dialog_out"
+	UNSAVED_CHANGES=true
+}
+
+function CREATE_USER_SUDO_tag()   { echo " └ Install sudo"; }
+function CREATE_USER_SUDO_label() { on_off_label "$CREATE_USER_SUDO" " └ "; }
+function CREATE_USER_SUDO_show()  { [[ -n $CREATE_USER ]]; }
+function CREATE_USER_SUDO_help()  { echo "Install app-admin/sudo and allow the wheel group to use it. If the created user is in wheel and has a password, the root account may stay locked."; }
+function CREATE_USER_SUDO_menu()  {
+	on_off_toggle "CREATE_USER_SUDO"
+	UNSAVED_CHANGES=true
+}
+
+function CREATE_USER_SSH_AUTHORIZED_KEYS_tag()   { echo " └ Authorized keys"; }
+function CREATE_USER_SSH_AUTHORIZED_KEYS_label() { echo " └ ($(sed '/^\s*#/d;/^\s*$/d' <<< "$CREATE_USER_SSH_AUTHORIZED_KEYS" | wc -l) keys)"; }
+function CREATE_USER_SSH_AUTHORIZED_KEYS_show()  { [[ -n $CREATE_USER ]]; }
+function CREATE_USER_SSH_AUTHORIZED_KEYS_help()  { echo "The authorized keys for ssh login as the created user, one per line."; }
+function CREATE_USER_SSH_AUTHORIZED_KEYS_menu()  {
+	local tmpfile
+	tmpfile="$(mktemp)" || die "Could not create temporary file."
+	cat > "$tmpfile" <<EOF
+# Enter all authorized keys for ssh login as $CREATE_USER.
+# Use <Tab> to navigate between the inputbox, <OK> and <Cancel>.
+#
+# All comments will be removed from the final file.
+# If you are on a vconsole and have no means of entering this now,
+# simply edit the final configuration later with a text editor.
+
+#ssh-ed25519 ......
+$CREATE_USER_SSH_AUTHORIZED_KEYS
+EOF
+
+	dialog \
+		--title "Enter authorized keys" \
+		--editbox "$tmpfile" "${EDITTEXT_SIZE[@]}"
+	CREATE_USER_SSH_AUTHORIZED_KEYS="$(sed '/^\s*#/d;/^\s*$/d' <<< "$dialog_out")"
+	UNSAVED_CHANGES=true
+}
+
 function ENABLE_SSHD_tag()   { echo "Enable sshd"; }
 function ENABLE_SSHD_label() { on_off_label "$ENABLE_SSHD"; }
 function ENABLE_SSHD_show()  { return 0; }
@@ -1698,6 +1813,8 @@ function save() {
 
 $(define_disk_layout)
 
+DETECT_EXISTING_PARTITIONS=${DETECT_EXISTING_PARTITIONS@Q}
+
 
 ################################################
 # System configuration
@@ -1737,6 +1854,7 @@ STAGE3_BASENAME_CUSTOM=\$([[ \$STAGE3_VARIANT == *x32* ]] && echo "stage3-$STAGE
 USE_PORTAGE_TESTING=${USE_PORTAGE_TESTING@Q}
 SELECT_MIRRORS=${SELECT_MIRRORS@Q}
 SELECT_MIRRORS_LARGE_FILE=${SELECT_MIRRORS_LARGE_FILE@Q}
+SELECT_MIRRORS_COUNTRY=${SELECT_MIRRORS_COUNTRY@Q}
 SYSTEMD=\$([[ \$STAGE3_VARIANT == *systemd* ]] && echo "true" || echo "false")
 MUSL=\$([[ \$STAGE3_VARIANT == *musl* ]] && echo "true" || echo "false")
 
@@ -1750,6 +1868,11 @@ ENABLE_BINPKG=${ENABLE_BINPKG@Q}
 KERNEL_TYPE=${KERNEL_TYPE@Q}
 BOOTLOADER=${BOOTLOADER@Q}
 ROOT_SSH_AUTHORIZED_KEYS=${ROOT_SSH_AUTHORIZED_KEYS@Q}
+CREATE_USER=${CREATE_USER@Q}
+CREATE_USER_GROUPS=${CREATE_USER_GROUPS@Q}
+CREATE_USER_SHELL=${CREATE_USER_SHELL@Q}
+CREATE_USER_SUDO=${CREATE_USER_SUDO@Q}
+CREATE_USER_SSH_AUTHORIZED_KEYS=${CREATE_USER_SSH_AUTHORIZED_KEYS@Q}
 
 ################################################
 # Prove that you have read the config
