@@ -65,6 +65,33 @@ for p in /proc/[0-9]*; do
 done
 [[ $found == 1 ]] || echo "(none)"
 
+# A detached mount stays alive while any child mount inside it does, and those children are tmpfs, not this device
+echo "=== mounts under the installer tmp dir in every namespace ==="
+found=0
+declare -A seen_ns=()
+for mi in /proc/[0-9]*/mountinfo; do
+	p="${mi#/proc/}"; p="${p%%/*}"
+	ns="$(readlink -- "/proc/$p/ns/mnt" 2>/dev/null)" || continue
+	[[ -v seen_ns[$ns] ]] && continue
+	seen_ns[$ns]=true
+	hits="$(grep -E -- "${TMPDIR_PATTERN:-gentoo-install}" "$mi" 2>/dev/null)" || continue
+	[[ -n $hits ]] || continue
+	echo "pid $p [$ns] $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
+	sed 's/^/    /' <<< "$hits"
+	found=1
+done
+[[ $found == 1 ]] || echo "(none)"
+
+echo "=== mount count per namespace (a leftover shows up as a different count) ==="
+declare -A counted=()
+for mi in /proc/[0-9]*/mountinfo; do
+	p="${mi#/proc/}"; p="${p%%/*}"
+	ns="$(readlink -- "/proc/$p/ns/mnt" 2>/dev/null)" || continue
+	[[ -v counted[$ns] ]] && continue
+	counted[$ns]=true
+	printf '%s pid %-7s %4s mounts  %s\n' "$ns" "$p" "$(wc -l < "$mi")" "$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-60)"
+done
+
 echo "=== mount namespaces on this system ==="
 command -v lsns >/dev/null 2>&1 && lsns -t mnt || echo "(lsns not available)"
 
