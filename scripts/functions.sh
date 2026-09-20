@@ -415,11 +415,30 @@ function installer_signal_handler() {
 	exit "$status"
 }
 
+# Mounts below a shared mount propagate into every service mount namespace, and a lazy unmount never removes those copies
+function isolate_installer_tmp_dir() {
+	[[ ${RUNNING_IN_INSTALLER_CHROOT:-false} != true ]] \
+		|| return 0
+	command -v mountpoint >/dev/null 2>&1 \
+		|| return 0
+
+	if ! mountpoint -q -- "$TMP_DIR"; then
+		mount --bind -- "$TMP_DIR" "$TMP_DIR" \
+			|| die "Could not bind '$TMP_DIR' onto itself"
+		record_installer_created_mount "$TMP_DIR"
+	fi
+
+	# Everything mounted below this point inherits private propagation from it
+	mount --make-rprivate -- "$TMP_DIR" \
+		|| die "Could not make '$TMP_DIR' a private mount"
+}
+
 function prepare_installation_environment() {
 	maybe_exec 'before_prepare_environment' \
 		|| die "Hook before_prepare_environment failed"
 
 	einfo "Preparing installation environment"
+	isolate_installer_tmp_dir
 
 	local wanted_programs=(
 		awk

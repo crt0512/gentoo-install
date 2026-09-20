@@ -13,19 +13,19 @@ echo "=== device ==="
 lsblk -o NAME,MAJ:MIN,FSTYPE,LABEL,MOUNTPOINTS "$R"
 echo "device number: $MM"
 
-# A mount records the path it was given, and only its own namespace lists it, so match the device number everywhere
-echo "=== mounts of $MM in every mount namespace ==="
+# btrfs reports an anonymous device number for its mounts, so match the source path too
+echo "=== mounts of $MM or $R in every mount namespace ==="
 found=0
 declare -A seen=()
 for mi in /proc/[0-9]*/mountinfo; do
-	grep -q " $MM " "$mi" 2>/dev/null || continue
+	grep -qE " $MM | $R | $D " "$mi" 2>/dev/null || continue
 	p="${mi#/proc/}"; p="${p%%/*}"
 	ns="$(readlink -- "/proc/$p/ns/mnt" 2>/dev/null)" || ns="unknown"
 	[[ -v seen[$ns] ]] && continue
 	seen[$ns]=true
 	found=1
 	echo "pid $p [$ns] $(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)"
-	grep " $MM " "$mi" | sed 's/^/    /'
+	grep -E " $MM | $R | $D " "$mi" | sed 's/^/    /'
 done
 [[ $found == 1 ]] || echo "(none)"
 
