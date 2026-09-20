@@ -24,17 +24,16 @@ expect_failure() {
 	fi
 }
 
-# A destructive confirmation must match exactly. In particular, pressing Enter
-# must never retain the permissive default of the generic ask() helper.
+# Kei bock mann eifach Y/n langt hier völlig, mir installiered gentoo und ned Ubuntu bruh
 flush_stdin() { :; }
-if printf '\n' | confirm_destructive_action WIPE 'test prompt'; then
-	fail 'empty destructive confirmation was accepted'
+if printf 'n\n' | ask 'test prompt'; then
+	fail 'declined destructive confirmation was accepted'
 fi
-if printf 'wipe\n' | confirm_destructive_action WIPE 'test prompt'; then
-	fail 'case-mismatched destructive confirmation was accepted'
+if printf 'no\n' | ask 'test prompt'; then
+	fail 'declined destructive confirmation was accepted'
 fi
-printf 'WIPE\n' | confirm_destructive_action WIPE 'test prompt' \
-	|| fail 'exact destructive confirmation was rejected'
+printf 'y\n' | ask 'test prompt' \
+	|| fail 'affirmative destructive confirmation was rejected'
 
 # Exercise the layout-level guard before any action can be queued.
 canonicalize_whole_block_device() {

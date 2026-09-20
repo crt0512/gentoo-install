@@ -1,8 +1,6 @@
-## About gentoo-easy-install
+## About gentoo-install
 
-This project aspires to be your favourite way to install gentoo.
-It aims to provide a smooth installation experience, both for beginners and experts.
-You may configure it by using a menuconfig-inspired interface or simply via a config file.
+This is a fork of gentoo-easy-install that I duct taped together to work with the more or less most recent archlinux installer ISOs available during 2026-09-20. All below is as original fork had it afaik.
 
 It supports the most common disk layouts, different file systems like ext4, ZFS and btrfs as well
 as additional layers such as LUKS or mdraid. It also supports both EFI (recommended) and BIOS boot,

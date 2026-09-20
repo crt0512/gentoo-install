@@ -16,6 +16,6 @@ Do not run configurations or repository copies obtained from an untrusted source
 
 ## Reporting a vulnerability
 
-Open a GitHub security advisory for `firesand/gentoo-easy-install` when possible. Do not include passwords, private keys, recovery keys, LUKS headers, or other secrets in a public issue.
+Open a GitHub security advisory for `crt0512/gentoo-install` when possible. Do not include passwords, private keys, recovery keys, LUKS headers, or other secrets in a public issue.
 
 For non-sensitive security hardening proposals, use the public issue tracker.

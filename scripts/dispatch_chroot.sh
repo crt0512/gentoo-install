@@ -3,9 +3,11 @@ set -uo pipefail
 
 [[ $EXECUTED_IN_CHROOT != "true" ]] \
 	&& { echo "This script must not be executed directly!" >&2; exit 1; }
-
-# Source the systems profile
+# relax nounset will susch verreckts
+set +u
+# shellcheck disable=SC1091
 source /etc/profile
+set -u
 
 # Set safe umask
 umask 0077

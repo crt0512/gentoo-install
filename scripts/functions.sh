@@ -5,6 +5,29 @@ source "$GENTOO_INSTALL_REPO_DIR/scripts/protection.sh" || exit 1
 ################################################
 # Functions
 
+# True if the live system runs systemd and provides systemd-timesyncd. Several live images (for example the Arch ISO) ship no other NTP client.
+function has_systemd_timesyncd() {
+	command -v timedatectl >/dev/null 2>&1 \
+		&& [[ -d /run/systemd/system ]] \
+		&& systemctl cat systemd-timesyncd.service >/dev/null 2>&1
+}
+
+# timesyncd synchronizes in the background, so enable it and wait until the clock is actually reported as synchronized.
+function sync_time_with_timesyncd() {
+	timedatectl set-ntp true \
+		|| return 1
+
+	local waited=0
+	while [[ $waited -lt 60 ]]; do
+		[[ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" == "yes" ]] \
+			&& return 0
+		sleep 1
+		waited=$((waited + 1))
+	done
+
+	return 1
+}
+
 function sync_time() {
 	einfo "Synchronizing time"
 	if command -v ntpd >/dev/null 2>&1; then
@@ -13,8 +36,11 @@ function sync_time() {
 	elif command -v chronyd >/dev/null 2>&1; then
 		chronyd -q 'pool pool.ntp.org iburst' \
 			|| die "Could not synchronize time with chronyd"
+	elif has_systemd_timesyncd; then
+		sync_time_with_timesyncd \
+			|| die "Could not synchronize time with systemd-timesyncd"
 	else
-		die "No supported NTP client found; refusing unauthenticated HTTP time synchronization"
+		die "No supported NTP client found (tried ntpd, chronyd and systemd-timesyncd); refusing unauthenticated HTTP time synchronization. Install one first, for example 'pacman -Sy chrony'."
 	fi
 
 	einfo "Current date: $(LANG=C date)"
@@ -342,9 +368,10 @@ function prepare_installation_environment() {
 		wget
 		wipefs
 	)
+	# Only one authenticated time source is needed duh
 	if command -v chronyd >/dev/null 2>&1; then
 		wanted_programs+=(chronyd)
-	else
+	elif ! command -v ntpd >/dev/null 2>&1 && ! has_systemd_timesyncd; then
 		wanted_programs+=(ntpd)
 	fi
 
@@ -1074,8 +1101,8 @@ function apply_disk_configuration() {
 		for destructive_device in "${DESTRUCTIVE_DEVICES[@]}"; do
 			ewarn "  $destructive_device"
 		done
-		local confirmation_phrase="WIPE ${DESTRUCTIVE_DEVICES[*]}"
-		confirm_destructive_action "$confirmation_phrase" "This destroys all data on the listed devices." \
+		# I hate it when scripts try and and babysit me
+		ask "This destroys all data on the listed devices. Continue?" \
 			|| die "Destructive disk operation cancelled"
 		confirmed_destructive_devices=("${DESTRUCTIVE_DEVICES[@]}")
 	fi
@@ -1554,7 +1581,7 @@ function gentoo_umount() {
 }
 
 function init_bash() {
-	source /etc/profile
+	source_profile
 	umask 0077
 	export PS1='(chroot) \[[0;31m\]\u\[[1;31m\]@\h \[[1;34m\]\w \[[m\]\$ \[[m\]'
 }; export -f init_bash
@@ -1562,7 +1589,7 @@ function init_bash() {
 function env_update() {
 	env-update \
 		|| die "Error in env-update"
-	source /etc/profile \
+	source_profile \
 		|| die "Could not source /etc/profile"
 	umask 0077
 }
@@ -1629,8 +1656,8 @@ function gentoo_chroot() {
 	# Execute command
 	einfo "Chrooting..."
 	local chroot_status
+	# TMP_DIR isch readonly ah demm punkt. Bash het kei bock uhf das drum lahts denn halt eifach garnix meh laufeh. So behindert mann.
 	EXECUTED_IN_CHROOT=true \
-		TMP_DIR="$TMP_DIR" \
 		CACHED_LSBLK_OUTPUT="$CACHED_LSBLK_OUTPUT" \
 		chroot -- "$chroot_dir" "$GENTOO_INSTALL_REPO_DIR/scripts/dispatch_chroot.sh" "$@"
 	chroot_status=$?

@@ -46,6 +46,25 @@ function flush_stdin() {
 	while read -r -t 0.01 empty_stdin; do true; done
 }
 
+# Source /etc/profile mit `nounset` im chiller relaxed modus
+function source_profile() {
+	local restore_nounset=false
+	if [[ -o nounset ]]; then
+		restore_nounset=true
+	fi
+
+	local status
+	set +u
+	# shellcheck disable=SC1091
+	source /etc/profile
+	status=$?
+	if [[ $restore_nounset == true ]]; then
+		set -u
+	fi
+
+	return "$status"
+}; export -f source_profile
+
 function ask() {
 	local response
 	while true; do
@@ -59,25 +78,6 @@ function ask() {
 			*) continue ;;
 		esac
 	done
-}
-
-# Require an exact phrase before a destructive operation. Empty input and every
-# other response are treated as "no"; callers decide how to report/handle it.
-#
-# $1: phrase which must be typed exactly (for example, WIPE)
-# $2: prompt describing the destructive operation
-function confirm_destructive_action() {
-	local expected_phrase="$1"
-	local prompt="$2"
-	local response
-
-	[[ -n "$expected_phrase" ]] \
-		|| die "Destructive confirmation phrase must not be empty"
-
-	flush_stdin
-	read -r -p "$prompt Type '$expected_phrase' to continue: " response \
-		|| return 1
-	[[ "$response" == "$expected_phrase" ]]
 }
 
 function try() {
