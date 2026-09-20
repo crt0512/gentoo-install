@@ -110,12 +110,17 @@ on live media that will not re-read a busy partition table. You are then asked s
 the filesystems should be reformatted. Detection is limited to plain gpt layouts, and keeping
 existing filesystems is not offered for luks, raid or zfs layouts.
 
-### (Optional) Faster mirror selection
+### (Optional) Mirror selection
 
-`mirrorselect` tests the whole worldwide mirror list by default, which takes a long time. Set
-`SELECT_MIRRORS_COUNTRY` to a country name from the gentoo mirror list (e.g. `"Germany"`) to
-only test the mirrors hosted there. The installer falls back to the full list if that country
-has no usable mirror.
+The default `GENTOO_MIRROR` is Init7 (Switzerland), which is well peered and fast for most of
+Europe. Change it to whatever is close to you; it is used both for the stage3 download and for
+the installed system.
+
+`SELECT_MIRRORS` (running `mirrorselect`) is off by default, because netselect probes hundreds
+of hosts and usually takes longer than the download it is meant to speed up. If you do enable
+it, set `SELECT_MIRRORS_COUNTRY` to a country name from the gentoo mirror list (e.g.
+`"Switzerland"`) so only the mirrors hosted there are tested. The installer falls back to the
+full list if that country has no usable mirror.
 
 ### (Optional) Additional packages
 

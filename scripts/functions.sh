@@ -422,10 +422,10 @@ function isolate_installer_tmp_dir() {
 	command -v mountpoint >/dev/null 2>&1 \
 		|| return 0
 
+	# Deliberately not cleaned up: the open install.log holds it, and a self-bind pins no device
 	if ! mountpoint -q -- "$TMP_DIR"; then
 		mount --bind -- "$TMP_DIR" "$TMP_DIR" \
 			|| die "Could not bind '$TMP_DIR' onto itself"
-		record_installer_created_mount "$TMP_DIR"
 	fi
 
 	# Everything mounted below this point inherits private propagation from it

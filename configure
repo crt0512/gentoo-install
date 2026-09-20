@@ -458,7 +458,7 @@ function load_default_config() {
 	PORTAGE_GIT_FULL_HISTORY=false
 	PORTAGE_GIT_MIRROR="https://anongit.gentoo.org/git/repo/sync/gentoo.git"
 
-	GENTOO_MIRROR="https://mirror.leaseweb.com/gentoo"
+	GENTOO_MIRROR="https://mirror.init7.net/gentoo"
 	GENTOO_ARCH="amd64"
 	GENTOO_SUBARCH=""
 
